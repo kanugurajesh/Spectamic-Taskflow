@@ -1,0 +1,21 @@
+version: 3
+
+systemUnderTest:
+  service:
+    definitions:
+      - definition:
+          source:
+            filesystem:
+              directory: specs/asyncapi
+          specs:
+            - task-events.yaml
+    runOptions:
+      asyncapi:
+        type: test
+        servers:
+          - host: kafka:9092
+            protocol: kafka
+
+specmatic:
+  license:
+    path: /specmatic/specmatic-license.txt

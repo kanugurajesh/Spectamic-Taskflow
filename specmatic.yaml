@@ -1,0 +1,28 @@
+version: 3
+
+systemUnderTest:
+  service:
+    definitions:
+      - definition:
+          source:
+            filesystem:
+              directory: specs/openapi
+          specs:
+            - task-api.yaml
+    runOptions:
+      openapi:
+        type: test
+        baseUrl: http://task-service:8080
+
+specmatic:
+  governance:
+    report:
+      formats:
+        - html
+      outputDirectory: build/reports/specmatic
+    successCriteria:
+      minCoveragePercentage: 100
+      maxMissedOperationsInSpec: 0
+      enforce: true
+  license:
+    path: /specmatic/specmatic-license.txt

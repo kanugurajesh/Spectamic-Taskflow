@@ -1,0 +1,282 @@
+openapi: 3.0.1
+info:
+  title: Task Management API
+  description: Contract for the Task Management Service — an executable spec that guides both humans and AI coding agents
+  version: '1.0'
+
+paths:
+  /tasks:
+    get:
+      summary: List all tasks
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, in-progress, completed]
+          examples:
+            TASKS_200_OK:
+              value: in-progress
+      responses:
+        '200':
+          description: List of tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+              examples:
+                TASKS_200_OK:
+                  value:
+                    - id: 1
+                      title: "Implement Login Feature"
+                      description: "Create JWT-based authentication"
+                      status: "in-progress"
+                      assignee: "alice"
+                      priority: "high"
+                      createdAt: "2024-01-15T10:00:00Z"
+
+    post:
+      summary: Create a new task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+            examples:
+              CREATE_TASK_201:
+                value:
+                  title: "Write Unit Tests"
+                  description: "Add tests for the authentication module"
+                  assignee: "bob"
+                  priority: "medium"
+              CREATE_TASK_400:
+                value:
+                  description: "Missing required title field"
+                  priority: "low"
+      responses:
+        '201':
+          description: Task created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+              examples:
+                CREATE_TASK_201:
+                  value:
+                    id: 2
+                    title: "Write Unit Tests"
+                    description: "Add tests for the authentication module"
+                    status: "pending"
+                    assignee: "bob"
+                    priority: "medium"
+                    createdAt: "2024-01-15T11:00:00Z"
+        '400':
+          description: Validation error — required fields missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                CREATE_TASK_400:
+                  value:
+                    error: "Validation failed"
+                    message: "title is required"
+
+  /tasks/{taskId}:
+    get:
+      summary: Get a task by ID
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+          examples:
+            GET_TASK_200:
+              value: 1
+            GET_TASK_404:
+              value: 999
+      responses:
+        '200':
+          description: Task found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+              examples:
+                GET_TASK_200:
+                  value:
+                    id: 1
+                    title: "Implement Login Feature"
+                    description: "Create JWT-based authentication"
+                    status: "in-progress"
+                    assignee: "alice"
+                    priority: "high"
+                    createdAt: "2024-01-15T10:00:00Z"
+        '404':
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                GET_TASK_404:
+                  value:
+                    error: "Not Found"
+                    message: "Task with id 999 not found"
+
+    put:
+      summary: Update a task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+          examples:
+            UPDATE_TASK_200:
+              value: 1
+            UPDATE_TASK_404:
+              value: 999
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaskRequest'
+            examples:
+              UPDATE_TASK_200:
+                value:
+                  status: "completed"
+                  assignee: "alice"
+              UPDATE_TASK_404:
+                value:
+                  status: "completed"
+      responses:
+        '200':
+          description: Task updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+              examples:
+                UPDATE_TASK_200:
+                  value:
+                    id: 1
+                    title: "Implement Login Feature"
+                    description: "Create JWT-based authentication"
+                    status: "completed"
+                    assignee: "alice"
+                    priority: "high"
+                    createdAt: "2024-01-15T10:00:00Z"
+        '404':
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                UPDATE_TASK_404:
+                  value:
+                    error: "Not Found"
+                    message: "Task with id 999 not found"
+
+    delete:
+      summary: Delete a task
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+          examples:
+            DELETE_TASK_204:
+              value: 1
+            DELETE_TASK_404:
+              value: 999
+      responses:
+        '204':
+          description: Task deleted successfully
+        '404':
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                DELETE_TASK_404:
+                  value:
+                    error: "Not Found"
+                    message: "Task with id 999 not found"
+
+components:
+  schemas:
+    Task:
+      type: object
+      required:
+        - id
+        - title
+        - status
+        - priority
+        - createdAt
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [pending, in-progress, completed]
+        assignee:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high]
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateTaskRequest:
+      type: object
+      required:
+        - title
+        - priority
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        assignee:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high]
+
+    UpdateTaskRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, in-progress, completed]
+        assignee:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high]
+
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string

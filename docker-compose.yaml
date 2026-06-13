@@ -1,0 +1,157 @@
+services:
+
+  # ─── Application Services ────────────────────────────────────────────────────
+
+  task-service:
+    container_name: taskflow-task-service
+    build:
+      context: ./services/task-service
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVER: kafka:9092
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; req=urllib.request.Request('http://localhost:8080/health', method='HEAD'); urllib.request.urlopen(req)"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  user-service:
+    container_name: taskflow-user-service
+    build:
+      context: ./services/user-service
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; req=urllib.request.Request('http://localhost:8081/health', method='HEAD'); urllib.request.urlopen(req)"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  # ─── Kafka ───────────────────────────────────────────────────────────────────
+
+  kafka:
+    image: apache/kafka:latest
+    container_name: taskflow-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  kafka-init:
+    image: apache/kafka:latest
+    container_name: taskflow-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c", "sh /specmatic/create-kafka-topics.sh"]
+    volumes:
+      - ./create-kafka-topics.sh:/specmatic/create-kafka-topics.sh
+    restart: "no"
+
+  # ─── Specmatic Contract Tests (default) ──────────────────────────────────────
+
+  test-task-api:
+    container_name: taskflow-test-task-api
+    image: specmatic/enterprise:latest
+    volumes:
+      - ./:/usr/src/app
+      - ../license.txt:/specmatic/specmatic-license.txt:ro
+    environment:
+      SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
+    depends_on:
+      task-service:
+        condition: service_healthy
+    command: ["test", "./specs/openapi/task-api.yaml", "--testBaseURL=http://task-service:8080"]
+
+  test-user-api:
+    container_name: taskflow-test-user-api
+    image: specmatic/enterprise:latest
+    volumes:
+      - ./:/usr/src/app
+      - ../license.txt:/specmatic/specmatic-license.txt:ro
+    environment:
+      SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
+    depends_on:
+      user-service:
+        condition: service_healthy
+    command: ["test", "./specs/openapi/user-api.yaml", "--testBaseURL=http://user-service:8081"]
+
+  # ─── Async Contract Tests (--profile async) ───────────────────────────────────
+
+  test-async:
+    container_name: taskflow-test-async
+    image: specmatic/enterprise:latest
+    profiles: ["async"]
+    volumes:
+      - ./:/usr/src/app
+      - ../license.txt:/specmatic/specmatic-license.txt:ro
+    environment:
+      SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      task-service:
+        condition: service_healthy
+    entrypoint: ["sh", "-lc"]
+    command: ["sleep 5 && specmatic test --config=./specmatic-async.yaml"]
+
+  # ─── Mock Server (--profile mock) ────────────────────────────────────────────
+
+  mock-task-api:
+    container_name: taskflow-mock-task-api
+    image: specmatic/enterprise:latest
+    profiles: ["mock"]
+    volumes:
+      - ./:/usr/src/app
+      - ../license.txt:/specmatic/specmatic-license.txt:ro
+    environment:
+      SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
+    command: ["mock", "./specs/openapi/task-api.yaml", "--port", "9100"]
+    ports:
+      - "9100:9100"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9100/actuator/health >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+
+  # ─── Specmatic Studio (--profile studio) ─────────────────────────────────────
+
+  studio:
+    container_name: taskflow-studio
+    image: specmatic/enterprise:latest
+    profiles: ["studio"]
+    volumes:
+      - ./:/usr/src/app
+      - ../license.txt:/specmatic/specmatic-license.txt:ro
+    environment:
+      SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
+    command: ["studio"]
+    ports:
+      - "9000:9000"
+      - "9001:9001"

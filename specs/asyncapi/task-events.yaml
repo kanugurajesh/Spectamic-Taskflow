@@ -1,0 +1,120 @@
+asyncapi: 3.0.0
+info:
+  title: Task Events
+  description: AsyncAPI contract for task lifecycle events published to Kafka
+  version: '1.0'
+
+servers:
+  kafka:
+    host: kafka:9092
+    protocol: kafka
+    description: Kafka broker for task event streaming
+
+channels:
+  task-created:
+    address: task-created
+    description: Channel for new task creation events
+    messages:
+      TaskCreated:
+        $ref: '#/components/messages/TaskCreated'
+
+  task-updated:
+    address: task-updated
+    description: Channel for task status update events
+    messages:
+      TaskUpdated:
+        $ref: '#/components/messages/TaskUpdated'
+
+operations:
+  publishTaskCreated:
+    action: send
+    channel:
+      $ref: '#/channels/task-created'
+    summary: Publish a task-created event when a new task is created via the REST API
+    messages:
+      - $ref: '#/channels/task-created/messages/TaskCreated'
+    examples:
+      - name: TASK_CREATED_EXAMPLE
+        payload:
+          taskId: 1
+          title: "Implement Login Feature"
+          status: "pending"
+          assignee: "alice"
+          priority: "high"
+          timestamp: "2024-01-15T10:00:00Z"
+
+  publishTaskUpdated:
+    action: send
+    channel:
+      $ref: '#/channels/task-updated'
+    summary: Publish a task-updated event when a task status changes
+    messages:
+      - $ref: '#/channels/task-updated/messages/TaskUpdated'
+    examples:
+      - name: TASK_UPDATED_EXAMPLE
+        payload:
+          taskId: 1
+          previousStatus: "pending"
+          newStatus: "in-progress"
+          updatedBy: "alice"
+          timestamp: "2024-01-15T11:00:00Z"
+
+components:
+  messages:
+    TaskCreated:
+      name: TaskCreated
+      title: Task Created Event
+      contentType: application/json
+      payload:
+        type: object
+        required:
+          - taskId
+          - title
+          - status
+          - priority
+          - timestamp
+        properties:
+          taskId:
+            type: integer
+            description: Unique identifier of the created task
+          title:
+            type: string
+            description: Task title
+          status:
+            type: string
+            enum: [pending, in-progress, completed]
+          assignee:
+            type: string
+            description: Username of the assigned developer
+          priority:
+            type: string
+            enum: [low, medium, high]
+          timestamp:
+            type: string
+            format: date-time
+
+    TaskUpdated:
+      name: TaskUpdated
+      title: Task Updated Event
+      contentType: application/json
+      payload:
+        type: object
+        required:
+          - taskId
+          - previousStatus
+          - newStatus
+          - timestamp
+        properties:
+          taskId:
+            type: integer
+          previousStatus:
+            type: string
+            enum: [pending, in-progress, completed]
+          newStatus:
+            type: string
+            enum: [pending, in-progress, completed]
+          updatedBy:
+            type: string
+          timestamp:
+            type: string
+            format: date-time

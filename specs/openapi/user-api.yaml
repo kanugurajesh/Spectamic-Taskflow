@@ -1,0 +1,149 @@
+openapi: 3.0.1
+info:
+  title: User Management API
+  description: Contract for the User Management Service
+  version: '1.0'
+
+paths:
+  /users:
+    get:
+      summary: List all users
+      responses:
+        '200':
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+              examples:
+                USERS_200_OK:
+                  value:
+                    - id: "alice"
+                      name: "Alice Johnson"
+                      email: "alice@example.com"
+                      role: "developer"
+                    - id: "bob"
+                      name: "Bob Smith"
+                      email: "bob@example.com"
+                      role: "qa"
+
+    post:
+      summary: Create a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+            examples:
+              CREATE_USER_201:
+                value:
+                  id: "charlie"
+                  name: "Charlie Brown"
+                  email: "charlie@example.com"
+                  role: "developer"
+      responses:
+        '201':
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                CREATE_USER_201:
+                  value:
+                    id: "charlie"
+                    name: "Charlie Brown"
+                    email: "charlie@example.com"
+                    role: "developer"
+
+  /users/{userId}:
+    get:
+      summary: Get a user by ID
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+          examples:
+            GET_USER_200:
+              value: alice
+            GET_USER_404:
+              value: unknown
+      responses:
+        '200':
+          description: User found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                GET_USER_200:
+                  value:
+                    id: "alice"
+                    name: "Alice Johnson"
+                    email: "alice@example.com"
+                    role: "developer"
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                GET_USER_404:
+                  value:
+                    error: "Not Found"
+                    message: "User with id unknown not found"
+
+components:
+  schemas:
+    User:
+      type: object
+      required:
+        - id
+        - name
+        - email
+        - role
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [developer, qa, manager, admin]
+
+    CreateUserRequest:
+      type: object
+      required:
+        - id
+        - name
+        - email
+        - role
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [developer, qa, manager, admin]
+
+    Error:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string
