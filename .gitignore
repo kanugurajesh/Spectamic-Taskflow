@@ -33,3 +33,5 @@ logs/
 # Specmatic license (sensitive — do not commit)
 license.txt
 specmatic-license.txt
+
+build
