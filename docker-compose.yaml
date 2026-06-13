@@ -72,6 +72,21 @@ services:
       - ./create-kafka-topics.sh:/specmatic/create-kafka-topics.sh
     restart: "no"
 
+  # ─── Frontend ────────────────────────────────────────────────────────────────
+
+  frontend:
+    container_name: taskflow-frontend
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/')"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+      start_period: 3s
+
   # ─── Specmatic Contract Tests (default) ──────────────────────────────────────
 
   test-task-api:

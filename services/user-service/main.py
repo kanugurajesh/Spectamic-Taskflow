@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)
 
 users = {
     "alice": {"id": "alice", "name": "Alice Johnson", "email": "alice@example.com", "role": "developer"},

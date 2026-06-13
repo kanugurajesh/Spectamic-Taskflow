@@ -8,9 +8,14 @@
 
 ## About Me
 
-I'm Rajesh Kanugu, a Computer Science student passionate about full-stack development, distributed systems, and AI-assisted engineering. I've been building side projects with REST APIs for a while, but I kept running into the same frustrating problem: services break each other silently. A frontend team changes an assumption, a backend team renames a field, and nobody finds out until production.
+**Kanugu Rajesh** — B.E. Computer Science, MVSR Engineering College (2022–2026)  
+[Portfolio](https://kanugurajesh.vercel.app/) · [GitHub](https://github.com/kanugurajesh) · [LinkedIn](https://linkedin.com/in/kanugurajesh/) · kanugurajesh3@gmail.com
 
-When I came across Specmatic and the concept of executable contracts, it clicked immediately — this is the missing layer between "we wrote a spec" and "the spec actually means something."
+I'm a final-year CS student with hands-on experience as a Full Stack AI Intern at two companies — Antz.ai (June 2025–Sep 2025) and DigiQuanta (Oct 2024–Apr 2025). At both, I built production-grade full-stack features: React + TypeScript frontends, Python/Flask/FastAPI backends, REST API integrations, and AI systems using RAG pipelines, LangChain, and vector databases (Qdrant, Neo4j). My side projects include [Documind](https://kanugurajesh.vercel.app/) — an AI document intelligence platform — and [FinGenie](https://kanugurajesh.vercel.app/), an AI-powered personal finance assistant built with Next.js and Supabase.
+
+I've made 4100+ GitHub contributions, won 2 global and 3 state-level hackathons, and built a website serving 5000+ users.
+
+The problem I kept hitting at both internships: **services break each other silently**. A backend team renames a field, a frontend team changes an assumption, and nobody finds out until production. When I discovered Specmatic and the idea of executable contracts, it immediately clicked — this is the missing enforcement layer between "we wrote an OpenAPI spec" and "the spec actually means something."
 
 ---
 
@@ -56,6 +61,11 @@ This gets worse with AI coding agents. When you ask an LLM to generate a service
 │   ┌──────────────────┐                                         │
 │   │   Apache Kafka   │  topics: task-created, task-updated     │
 │   │      :9092       │                                         │
+│   └──────────────────┘                                         │
+│                                                                 │
+│   ┌──────────────────┐                                         │
+│   │ Frontend (React) │  Kanban board SPA :3000                 │
+│   │   Tailwind JS    │  connects to mock :9100 or real :8080   │
 │   └──────────────────┘                                         │
 │                                                                 │
 │   Specmatic (contract enforcement layer):                       │
@@ -147,13 +157,21 @@ labs/
 └── specmatic-taskflow/  ← this project
 ```
 
-### 1. Run contract tests
+### 1. Run everything (services + frontend + contract tests)
 
 ```bash
 docker compose up
 ```
 
-Starts both services and runs OpenAPI contract tests against them. Exit code reflects test pass/fail.
+Starts both services, the Kanban frontend, and runs OpenAPI contract tests. Open `http://localhost:3000` to see the board.
+
+### 1b. Open the frontend against the mock server
+
+```bash
+docker compose --profile mock up mock-task-api frontend
+```
+
+Open `http://localhost:3000` → click **Mock Server :9100** in the sidebar.
 
 ### 2. Run with exit-code for CI
 
@@ -243,13 +261,17 @@ specmatic-taskflow/
 │   └── asyncapi/
 │       └── task-events.yaml        ← Task event contracts (2 channels)
 │
+├── frontend/
+│   ├── index.html                  ← Kanban board SPA (Tailwind + vanilla JS)
+│   └── Dockerfile
+│
 └── services/
     ├── task-service/
-    │   ├── main.py                 ← Flask CRUD + Kafka event publishing
+    │   ├── main.py                 ← Flask CRUD + CORS + Kafka event publishing
     │   ├── requirements.txt
     │   └── Dockerfile
     └── user-service/
-        ├── main.py                 ← Flask CRUD (seeded: alice, bob)
+        ├── main.py                 ← Flask CRUD + CORS (seeded: alice, bob)
         ├── requirements.txt
         └── Dockerfile
 ```
