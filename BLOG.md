@@ -243,27 +243,32 @@ def list_tasks():
 
 @app.route('/tasks', methods=['POST'])
 def create_task():
-    data = request.get_json()
-    if not data or 'title' not in data:
-        return jsonify({"error": "title is required"}), 400
+    global _next_id
+    data = request.get_json(silent=True) or {}
+    if not data.get('title'):
+        return jsonify({"error": "Validation failed", "message": "title is required"}), 400
+    if not data.get('priority'):
+        return jsonify({"error": "Validation failed", "message": "priority is required"}), 400
 
-    global next_id
     task = {
-        "taskId": next_id,
+        "id": _next_id,
         "title": data['title'],
+        "description": data.get('description', ''),
         "status": "pending",
-        "priority": data.get('priority', 'medium'),
-        "assignee": data.get('assignee'),
-        "createdAt": "2024-01-15T10:00:00Z"
+        "assignee": data.get('assignee', ''),
+        "priority": data['priority'],
+        "createdAt": _now(),
     }
-    tasks[next_id] = task
-    next_id += 1
+    tasks[_next_id] = task
+    _next_id += 1
 
-    publish_event("task-created", {
-        "taskId": task["taskId"],
+    _publish("task-created", {
+        "taskId": task["id"],
         "title": task["title"],
         "status": task["status"],
-        "timestamp": task["createdAt"]
+        "assignee": task["assignee"],
+        "priority": task["priority"],
+        "timestamp": task["createdAt"],
     })
 
     return jsonify(task), 201

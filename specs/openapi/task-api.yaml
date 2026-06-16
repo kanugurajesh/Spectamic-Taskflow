@@ -67,7 +67,7 @@ paths:
               examples:
                 CREATE_TASK_201:
                   value:
-                    id: 2
+                    id: 100
                     title: "Write Unit Tests"
                     description: "Add tests for the authentication module"
                     status: "pending"

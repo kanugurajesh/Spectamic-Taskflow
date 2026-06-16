@@ -44,6 +44,11 @@ paths:
                   name: "Charlie Brown"
                   email: "charlie@example.com"
                   role: "developer"
+              CREATE_USER_400:
+                value:
+                  id: "dave"
+                  email: "dave@example.com"
+                  role: "developer"
       responses:
         '201':
           description: User created
@@ -58,6 +63,17 @@ paths:
                     name: "Charlie Brown"
                     email: "charlie@example.com"
                     role: "developer"
+        '400':
+          description: Validation error — required fields missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                CREATE_USER_400:
+                  value:
+                    error: "Validation failed"
+                    message: "name is required"
 
   /users/{userId}:
     get:

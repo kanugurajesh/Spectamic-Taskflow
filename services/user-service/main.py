@@ -28,8 +28,9 @@ def list_users():
 @app.route("/users", methods=["POST"])
 def create_user():
     data = request.get_json(silent=True) or {}
-    if not data.get("id"):
-        return jsonify({"error": "Validation failed", "message": "id is required"}), 400
+    for field in ("id", "name", "email", "role"):
+        if not data.get(field):
+            return jsonify({"error": "Validation failed", "message": f"{field} is required"}), 400
     users[data["id"]] = data
     return jsonify(data), 201
 
