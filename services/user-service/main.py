@@ -15,6 +15,11 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/actuator/health", methods=["GET"])
+def actuator_health():
+    return jsonify({"status": "UP"})
+
+
 @app.route("/users", methods=["GET"])
 def list_users():
     return jsonify(list(users.values()))

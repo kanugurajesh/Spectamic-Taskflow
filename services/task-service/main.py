@@ -18,9 +18,27 @@ tasks = {
         "assignee": "alice",
         "priority": "high",
         "createdAt": "2024-01-15T10:00:00Z",
-    }
+    },
+    2: {
+        "id": 2,
+        "title": "Write Unit Tests",
+        "description": "Add test coverage for auth module",
+        "status": "pending",
+        "assignee": "bob",
+        "priority": "medium",
+        "createdAt": "2024-01-15T11:00:00Z",
+    },
+    3: {
+        "id": 3,
+        "title": "Review Pull Request",
+        "description": "Review the authentication PR",
+        "status": "pending",
+        "assignee": "alice",
+        "priority": "low",
+        "createdAt": "2024-01-15T12:00:00Z",
+    },
 }
-_next_id = 2
+_next_id = 100
 
 
 def _now():
@@ -44,6 +62,11 @@ def _publish(topic: str, payload: dict):
 @app.route("/health", methods=["GET", "HEAD"])
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/actuator/health", methods=["GET"])
+def actuator_health():
+    return jsonify({"status": "UP"})
 
 
 @app.route("/tasks", methods=["GET"])

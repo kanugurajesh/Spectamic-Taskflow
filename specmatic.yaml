@@ -15,6 +15,9 @@ systemUnderTest:
         baseUrl: http://task-service:8080
 
 specmatic:
+  settings:
+    test:
+      schemaResiliencyTests: positiveOnly
   governance:
     report:
       formats:

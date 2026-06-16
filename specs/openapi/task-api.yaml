@@ -139,7 +139,7 @@ paths:
             type: integer
           examples:
             UPDATE_TASK_200:
-              value: 1
+              value: 2
             UPDATE_TASK_404:
               value: 999
       requestBody:
@@ -166,13 +166,13 @@ paths:
               examples:
                 UPDATE_TASK_200:
                   value:
-                    id: 1
-                    title: "Implement Login Feature"
-                    description: "Create JWT-based authentication"
+                    id: 2
+                    title: "Write Unit Tests"
+                    description: "Add test coverage for auth module"
                     status: "completed"
                     assignee: "alice"
-                    priority: "high"
-                    createdAt: "2024-01-15T10:00:00Z"
+                    priority: "medium"
+                    createdAt: "2024-01-15T11:00:00Z"
         '404':
           description: Task not found
           content:
@@ -195,7 +195,7 @@ paths:
             type: integer
           examples:
             DELETE_TASK_204:
-              value: 1
+              value: 3
             DELETE_TASK_404:
               value: 999
       responses:

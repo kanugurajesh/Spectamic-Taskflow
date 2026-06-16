@@ -40,6 +40,7 @@ This gets worse with AI coding agents. When you ask an LLM to generate a service
 |---|---|
 | REST contract testing (OpenAPI 3.0.1) | `specs/openapi/task-api.yaml`, `user-api.yaml` |
 | Async event contract testing (AsyncAPI 3.0.0) | `specs/asyncapi/task-events.yaml` |
+| Schema resiliency testing (`positiveOnly`) | `specmatic.yaml` → `settings.test.schemaResiliencyTests` |
 | Service virtualization (mock server) | `--profile mock` |
 | Governance: 100% coverage enforcement | `specmatic.yaml` |
 | Specmatic Studio (visual contract IDE) | `--profile studio` |
@@ -130,12 +131,15 @@ Only then did I write `services/task-service/main.py`. The contract is the speci
 
 Once the REST layer was solid, I extended the approach to event-driven messaging. The Task Service publishes to Kafka on every mutation, and `specs/asyncapi/task-events.yaml` defines what those messages must look like. Specmatic validates the published messages against the AsyncAPI schema the same way it validates HTTP responses.
 
-### Step 5 — Add governance
+### Step 5 — Add governance and schema resiliency
 
-The final piece was enforcing that contracts don't rot. In `specmatic.yaml`:
+The final piece was enforcing that contracts don't rot, and that the service handles every valid input the spec allows — not just the single example written per endpoint. In `specmatic.yaml`:
 
 ```yaml
 specmatic:
+  settings:
+    test:
+      schemaResiliencyTests: positiveOnly
   governance:
     successCriteria:
       minCoveragePercentage: 100
@@ -143,7 +147,9 @@ specmatic:
       enforce: true
 ```
 
-This means a service that only partially implements its contract — even if all implemented endpoints pass — will still fail CI. The spec is the floor, not a suggestion.
+`schemaResiliencyTests: positiveOnly` tells Specmatic to expand each example into all valid positive schema variations. For example, `PUT /tasks/{taskId}` has a request body with three optional enum fields (`status`, `priority`, `assignee`). Instead of testing one hand-written example, Specmatic generates all valid combinations — 11 tests instead of 1. This catches bugs like an enum value the service forgot to handle, or an optional field combination that produces a malformed response.
+
+`minCoveragePercentage: 100` means a service that only partially implements its contract — even if all implemented endpoints pass — will still fail CI. The spec is the floor, not a suggestion.
 
 ---
 
@@ -202,7 +208,19 @@ docker compose up test-user-api
 - Every declared endpoint is reachable
 - Response status codes match examples
 - Response bodies conform to the schema (required fields, types, enums)
+- All valid positive schema variations are exercised (`schemaResiliencyTests: positiveOnly`)
 - 100% operation coverage is enforced via `specmatic.yaml`
+
+### Schema Resiliency Testing
+
+With `schemaResiliencyTests: positiveOnly` in `specmatic.yaml`, Specmatic automatically expands each example into the full space of valid inputs defined by the schema. This is applied to both services:
+
+```bash
+docker compose up test-task-api --build
+docker compose up test-user-api --build
+```
+
+For `PUT /tasks/{taskId}`, the `UpdateTaskRequest` schema has three optional enum fields. Specmatic generates 11 test variations covering every valid combination of `status`, `priority`, and `assignee` values — without any additional example authoring. A service that only handles the documented example but silently breaks on `priority: "low"` will be caught.
 
 ### Mock Server (Consumer-Driven Development)
 
@@ -249,15 +267,15 @@ Open `http://localhost:9000` — you can browse, edit, and run tests against the
 ```
 specmatic-taskflow/
 ├── README.md                       ← you are here
-├── specmatic.yaml                  ← REST contract test config (100% coverage enforced)
+├── specmatic.yaml                  ← REST contract test config (100% coverage + schema resiliency)
 ├── specmatic-async.yaml            ← Async event contract test config
 ├── docker-compose.yaml             ← Full orchestration
 ├── create-kafka-topics.sh          ← Kafka topic bootstrap
 │
 ├── specs/
 │   ├── openapi/
-│   │   ├── task-api.yaml           ← Task Service contract (5 endpoints, 10 examples)
-│   │   └── user-api.yaml           ← User Service contract (3 endpoints, 5 examples)
+│   │   ├── task-api.yaml           ← Task Service contract (5 endpoints, isolated example IDs)
+│   │   └── user-api.yaml           ← User Service contract (3 endpoints, 4 examples)
 │   └── asyncapi/
 │       └── task-events.yaml        ← Task event contracts (2 channels)
 │
@@ -267,7 +285,7 @@ specmatic-taskflow/
 │
 └── services/
     ├── task-service/
-    │   ├── main.py                 ← Flask CRUD + CORS + Kafka event publishing
+    │   ├── main.py                 ← Flask CRUD + CORS + Kafka publishing (seeded: tasks 1–3)
     │   ├── requirements.txt
     │   └── Dockerfile
     └── user-service/
@@ -353,7 +371,13 @@ REST contracts are well understood, but async event schemas are often left unval
 **4. Governance makes contracts enforceable.**
 The `minCoveragePercentage: 100` setting means a service that partially implements its contract will fail CI. This is the difference between a spec that rots and one that stays alive.
 
-**5. AI coding agents need executable contracts more than humans do.**
+**5. Schema resiliency reveals what examples hide.**
+A single example per endpoint only proves the service handles that one case. `schemaResiliencyTests: positiveOnly` expands each example into all valid schema variations automatically, exposing gaps that hand-written examples never reach.
+
+**6. Test isolation is critical for stateful services.**
+Schema resiliency generates more tests, which means more mutations. A DELETE test that removes the same task ID that a GET test relies on causes cascading failures. The fix is dedicated seed data per operation: task 1 for GET (read-only), task 2 for PUT (idempotent), task 3 for DELETE (disposable). Starting `_next_id` at 100 prevents POST tests from colliding with seeded IDs.
+
+**7. AI coding agents need executable contracts more than humans do.**
 Humans can read documentation and ask questions. AI agents need machine-readable, executable constraints. Specmatic contracts are exactly that.
 
 ---
@@ -375,6 +399,21 @@ My initial AsyncAPI spec had `host: localhost:9092`. This works on the host mach
 ### 4. Making Kafka publish non-blocking
 
 The task service imports `kafka-python` and tries to connect on the first publish. If Kafka isn't ready yet, the connection throws. Wrapping the publish in a `try/except` means the service starts and responds to healthchecks even before Kafka is fully up — the REST contract tests still pass, and the async tests run separately after Kafka is confirmed healthy.
+
+### 5. Specmatic Enterprise requires `/actuator/health` to run tests
+
+Specmatic Enterprise checks for a `GET /actuator/health` endpoint on the service before executing any tests. Without it, every test scenario is marked as "Skipped" and coverage shows 0% — even if the service is fully up and the spec is correct. Adding `/actuator/health` returning `{"status": "UP"}` to both Flask services resolved this. This is separate from the application's own `/health` endpoint.
+
+### 6. Schema resiliency + stateful in-memory store = test isolation problem
+
+Enabling `schemaResiliencyTests: positiveOnly` expanded the task-api test suite from ~10 tests to 27. With more tests running, execution order matters. Specmatic runs operations alphabetically by HTTP method within a path (DELETE → GET → PUT). So `DELETE /tasks/1` ran first, wiped task 1, and then `GET /tasks/1` and all 11 `PUT /tasks/1` schema resiliency variations returned 404 instead of 200.
+
+The fix was to assign each destructive or mutating operation its own dedicated seed task:
+- Task 1 → `GET /tasks/{taskId}` → 200 (read-only, never touched by other operations)
+- Task 2 → `PUT /tasks/{taskId}` → 200 (mutated but never deleted)
+- Task 3 → `DELETE /tasks/{taskId}` → 204 (disposable)
+
+And setting `_next_id = 100` prevents the 6 POST schema resiliency tests from creating tasks with IDs 2 and 3, which would overwrite the seed data.
 
 ---
 
