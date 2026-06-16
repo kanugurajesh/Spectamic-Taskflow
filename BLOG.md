@@ -43,6 +43,7 @@ specmatic-taskflow is an AI-native task management system with:
 - **Apache Kafka** — Event bus for task lifecycle events (`task-created`, `task-updated`)
 - **Kanban Frontend** — Vanilla JavaScript SPA with no build toolchain overhead
 - **Specmatic Contract Tests** — REST tests (OpenAPI 3.0.1) + Async tests (AsyncAPI 3.0.0)
+- **Schema Resiliency Tests** — Auto-generated positive variations beyond hand-written examples
 - **Specmatic Mock Server** — Serves contract-driven mock responses before real services exist
 - **Specmatic Studio** — Visual IDE for contract exploration
 
@@ -160,23 +161,44 @@ Specmatic hit the (non-existent) endpoints and failed every test. But this failu
 The `specmatic.yaml` configuration:
 
 ```yaml
-contract_tests:
-  - git:
-      url: "."
-      branch: "main"
-      specmaticConfig: specs/openapi/task-api.yaml
-    baseURL: http://task-service:8080
-    reportFormat: HTML
+version: 3
 
-governance:
-  minCoveragePercentage: 100
-  maxMissedOperationsInSpec: 0
+systemUnderTest:
+  service:
+    definitions:
+      - definition:
+          source:
+            filesystem:
+              directory: specs/openapi
+          specs:
+            - task-api.yaml
+    runOptions:
+      openapi:
+        type: test
+        baseUrl: http://task-service:8080
+
+specmatic:
+  settings:
+    test:
+      schemaResiliencyTests: positiveOnly
+  governance:
+    report:
+      formats:
+        - html
+      outputDirectory: build/reports/specmatic
+    successCriteria:
+      minCoveragePercentage: 100
+      maxMissedOperationsInSpec: 0
+      enforce: true
+  license:
+    path: /specmatic/specmatic-license.txt
 ```
 
-Two governance flags matter here:
+Three governance settings matter here:
 
 - `minCoveragePercentage: 100` — Every single endpoint in the spec must be tested. No skipping.
 - `maxMissedOperationsInSpec: 0` — If the service has endpoints not in the spec, it fails.
+- `schemaResiliencyTests: positiveOnly` — Beyond the hand-written examples, Specmatic automatically generates all valid positive schema variations. More on this in Step 6.
 
 This makes the contract **enforcing**, not advisory.
 
@@ -190,20 +212,26 @@ With the failing tests as my guide, I implemented the Task Service:
 # services/task-service/main.py
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from kafka import KafkaProducer
 import json, os
 
 app = Flask(__name__)
 CORS(app)
 
+# Three tasks seeded with dedicated IDs — one per mutating operation
+# to prevent test ordering conflicts (see Challenges section).
 tasks = {
-    1: {
-        "taskId": 1, "title": "Set up CI pipeline",
-        "status": "pending", "priority": "high",
-        "assignee": None, "createdAt": "2024-01-15T10:00:00Z"
-    }
+    1: {"id": 1, "title": "Implement Login Feature", "status": "in-progress",
+        "assignee": "alice", "priority": "high", "createdAt": "2024-01-15T10:00:00Z"},
+    2: {"id": 2, "title": "Write Unit Tests", "status": "pending",
+        "assignee": "bob", "priority": "medium", "createdAt": "2024-01-15T11:00:00Z"},
+    3: {"id": 3, "title": "Review Pull Request", "status": "pending",
+        "assignee": "alice", "priority": "low", "createdAt": "2024-01-15T12:00:00Z"},
 }
-next_id = 2
+_next_id = 100  # avoids collision with seed IDs during schema resiliency POST tests
+
+@app.route("/actuator/health", methods=["GET"])
+def actuator_health():
+    return jsonify({"status": "UP"})
 
 @app.route('/tasks', methods=['GET'])
 def list_tasks():
@@ -254,7 +282,44 @@ All tests pass. Not because I wrote tests against my own implementation — but 
 
 ---
 
-## Step 4: Extend to Async Events with AsyncAPI
+## Step 4: Schema Resiliency — Beyond Hand-Written Examples
+
+One example per endpoint is a floor, not a ceiling.
+
+With `schemaResiliencyTests: positiveOnly` in `specmatic.yaml`, Specmatic automatically expands each example into every valid positive variation that the schema allows. No extra test files. No test authoring. The schema itself defines the test space.
+
+Here's what this means in practice for `PUT /tasks/{taskId}`:
+
+```yaml
+UpdateTaskRequest:
+  type: object
+  properties:
+    status:
+      type: string
+      enum: [pending, in-progress, completed]   # 3 values
+    assignee:
+      type: string
+    priority:
+      type: string
+      enum: [low, medium, high]                 # 3 values
+```
+
+All three fields are optional. The hand-written example only covers `{"status": "completed", "assignee": "alice"}`. With `positiveOnly`, Specmatic generates all valid combinations of enum values and optional field presence — **11 test cases from one example**, automatically.
+
+The test count jump is real:
+
+| Mode | Total tests (task-api) |
+|------|----------------------|
+| Example-only (no resiliency) | ~10 |
+| `schemaResiliencyTests: positiveOnly` | 27 |
+
+This catches bugs like: a service that handles `priority: "high"` but crashes on `priority: "low"` — something a single hand-written example would never reveal.
+
+**One important consequence:** more tests means more mutations, which means test execution order matters. I cover how I solved this in the Challenges section.
+
+---
+
+## Step 5: Extend to Async Events with AsyncAPI
 
 REST APIs are only half the story in an event-driven system. When the Task Service creates a task, it publishes to Kafka. Without a contract for those messages, any consumer can break silently.
 
@@ -319,7 +384,7 @@ contract_tests:
 
 ---
 
-## Step 5: Mock Server for Parallel Development
+## Step 6: Mock Server for Parallel Development
 
 While building the frontend Kanban board, the Task Service wasn't fully implemented yet. Rather than hardcoding fake data or building a separate mock, I used Specmatic's mock server:
 
@@ -335,7 +400,7 @@ This is the pattern that enables **parallel development without integration cere
 
 ---
 
-## Step 6: Governance Enforcement in CI
+## Step 7: Governance Enforcement in CI
 
 The final piece is making contracts enforced — not just available.
 
@@ -422,11 +487,11 @@ This is what "AI-native infrastructure" actually means: not using AI to write co
 
 ## Contract Coverage at a Glance
 
-| Spec File | Endpoints / Channels | Named Examples |
-|-----------|---------------------|----------------|
-| `specs/openapi/task-api.yaml` | 5 REST endpoints | 11 (covering 200, 201, 204, 400, 404 scenarios) |
-| `specs/openapi/user-api.yaml` | 3 REST endpoints | User CRUD scenarios |
-| `specs/asyncapi/task-events.yaml` | 2 Kafka channels | `task-created`, `task-updated` |
+| Spec File | Endpoints / Channels | Named Examples | Tests with `positiveOnly` |
+|-----------|---------------------|----------------|--------------------------|
+| `specs/openapi/task-api.yaml` | 5 REST endpoints | 10 (200, 201, 204, 400, 404 scenarios) | 27 |
+| `specs/openapi/user-api.yaml` | 3 REST endpoints | 4 (201, 200, 200, 404) | expanded automatically |
+| `specs/asyncapi/task-events.yaml` | 2 Kafka channels | `task-created`, `task-updated` | — |
 
 ---
 
@@ -472,6 +537,47 @@ The service stays healthy and responds to REST calls even if Kafka is temporaril
 ### 4. AsyncAPI server host resolution
 
 The AsyncAPI spec's `servers[].host` must match the hostname that the Specmatic container can resolve. Inside Docker Compose, that's the service name (`kafka`), not `localhost`. Always check your spec's server host against your runtime network topology.
+
+### 5. Specmatic Enterprise requires `/actuator/health` to execute tests
+
+This one cost me time. Running `docker compose up test-user-api` produced an HTML report showing **0% coverage, 4 tests skipped, "Actuator Not Available"** — even though the Flask service was fully up and responding correctly.
+
+Specmatic Enterprise checks for a `GET /actuator/health` endpoint before executing any tests. Without it, every scenario is marked "Skipped" regardless of service health. The fix is a single route on each Flask service:
+
+```python
+@app.route("/actuator/health", methods=["GET"])
+def actuator_health():
+    return jsonify({"status": "UP"})
+```
+
+This is separate from the application's own `/health` endpoint. Once added, all 4 tests ran and coverage showed correctly.
+
+### 6. Schema resiliency + stateful in-memory store = test ordering trap
+
+Enabling `schemaResiliencyTests: positiveOnly` expanded the task-api suite from ~10 to 27 tests. More tests exposed a subtle ordering bug I hadn't hit before.
+
+Specmatic runs operations on the same path alphabetically by HTTP method: **DELETE → GET → PUT**. My spec used `taskId=1` for all three success scenarios. When DELETE ran first and removed task 1, the subsequent GET and all 11 PUT schema resiliency variations against `taskId=1` returned 404 instead of 200 — 13 cascading failures from a single deletion.
+
+The fix: assign each mutating operation its own dedicated seed task.
+
+```python
+tasks = {
+    1: {...},   # GET /tasks/1  — read-only, never touched by other operations
+    2: {...},   # PUT /tasks/2  — mutated but never deleted
+    3: {...},   # DELETE /tasks/3 — disposable
+}
+_next_id = 100  # POST schema resiliency tests create IDs 100+ — no collision with seeds
+```
+
+And in the spec, update the examples to match:
+
+```yaml
+GET_TASK_200:   value: 1   # task 1
+UPDATE_TASK_200: value: 2  # task 2
+DELETE_TASK_204: value: 3  # task 3
+```
+
+Each operation now has its own data slice. Tests pass regardless of execution order.
 
 ---
 
