@@ -65,8 +65,8 @@ This gets worse with AI coding agents. When you ask an LLM to generate a service
 │   └──────────────────┘                                         │
 │                                                                 │
 │   ┌──────────────────┐                                         │
-│   │ Frontend (React) │  Kanban board SPA :3000                 │
-│   │   Tailwind JS    │  connects to mock :9100 or real :8080   │
+│   │ Frontend (Vanilla│  Kanban board SPA :3000                 │
+│   │   JS + Tailwind) │  connects to mock :9100 or real :8080   │
 │   └──────────────────┘                                         │
 │                                                                 │
 │   Specmatic (contract enforcement layer):                       │
@@ -200,6 +200,11 @@ docker compose down --remove-orphans
 Specmatic reads `specs/openapi/task-api.yaml` and generates test scenarios from the inline examples. It then hits the live Task Service and validates that every response matches the contract.
 
 ```bash
+# First run or after any service code change — use --build to rebuild images
+docker compose up test-task-api --build
+docker compose up test-user-api --build
+
+# Subsequent runs (no code changes)
 docker compose up test-task-api
 docker compose up test-user-api
 ```
@@ -275,7 +280,7 @@ specmatic-taskflow/
 ├── specs/
 │   ├── openapi/
 │   │   ├── task-api.yaml           ← Task Service contract (5 endpoints, isolated example IDs)
-│   │   └── user-api.yaml           ← User Service contract (3 endpoints, 4 examples)
+│   │   └── user-api.yaml           ← User Service contract (3 endpoints, 5 examples incl. 400)
 │   └── asyncapi/
 │       └── task-events.yaml        ← Task event contracts (2 channels)
 │

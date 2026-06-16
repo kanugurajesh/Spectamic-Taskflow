@@ -103,10 +103,10 @@ paths:
               examples:
                 TASKS_200_OK:
                   value:
-                    - taskId: 1
-                      title: "Set up CI pipeline"
-                      status: pending
-                      priority: high
+                    - id: 1
+                      title: "Implement Login Feature"
+                      status: "in-progress"
+                      priority: "high"
 
     post:
       summary: Create a task
@@ -116,11 +116,11 @@ paths:
             examples:
               CREATE_TASK_201:
                 value:
-                  title: "Write API tests"
-                  priority: medium
+                  title: "Write Unit Tests"
+                  priority: "medium"
               CREATE_TASK_400:
                 value:
-                  priority: medium   # Missing required 'title'
+                  priority: "medium"   # Missing required 'title'
       responses:
         '201':
           content:
@@ -128,16 +128,18 @@ paths:
               examples:
                 CREATE_TASK_201:
                   value:
-                    taskId: 2
-                    title: "Write API tests"
-                    status: pending
+                    id: 100
+                    title: "Write Unit Tests"
+                    status: "pending"
+                    priority: "medium"
         '400':
           content:
             application/json:
               examples:
                 CREATE_TASK_400:
                   value:
-                    error: "title is required"
+                    error: "Validation failed"
+                    message: "title is required"
 ```
 
 The critical detail: **inline example names must match across parameters, request bodies, and responses.**
@@ -198,7 +200,7 @@ Three governance settings matter here:
 
 - `minCoveragePercentage: 100` — Every single endpoint in the spec must be tested. No skipping.
 - `maxMissedOperationsInSpec: 0` — If the service has endpoints not in the spec, it fails.
-- `schemaResiliencyTests: positiveOnly` — Beyond the hand-written examples, Specmatic automatically generates all valid positive schema variations. More on this in Step 6.
+- `schemaResiliencyTests: positiveOnly` — Beyond the hand-written examples, Specmatic automatically generates all valid positive schema variations. More on this in Step 4.
 
 This makes the contract **enforcing**, not advisory.
 
@@ -377,12 +379,23 @@ The async contract test works differently from REST tests. Instead of Specmatic 
 
 ```yaml
 # specmatic-async.yaml
-contract_tests:
-  - git:
-      url: "."
-      specmaticConfig: specs/asyncapi/task-events.yaml
-    baseURL: http://task-service:8080
-    kafkaBrokers: kafka:9092
+version: 3
+
+systemUnderTest:
+  service:
+    definitions:
+      - definition:
+          source:
+            filesystem:
+              directory: specs/asyncapi
+          specs:
+            - task-events.yaml
+    runOptions:
+      asyncapi:
+        type: test
+        servers:
+          - host: kafka:9092
+            protocol: kafka
 ```
 
 > **Gotcha I hit:** The AsyncAPI spec initially had `host: localhost:9092`. Inside Docker's network, services communicate by service name, not localhost. Changing to `host: kafka:9092` (matching the Docker Compose service name) fixed the connection immediately. Always verify your spec's server hosts match your runtime network topology.
@@ -495,7 +508,7 @@ This is what "AI-native infrastructure" actually means: not using AI to write co
 | Spec File | Endpoints / Channels | Named Examples | Tests with `positiveOnly` |
 |-----------|---------------------|----------------|--------------------------|
 | `specs/openapi/task-api.yaml` | 5 REST endpoints | 10 (200, 201, 204, 400, 404 scenarios) | 27 |
-| `specs/openapi/user-api.yaml` | 3 REST endpoints | 4 (201, 200, 200, 404) | expanded automatically |
+| `specs/openapi/user-api.yaml` | 3 REST endpoints | 5 (201, 400, 200, 200, 404) | expanded automatically |
 | `specs/asyncapi/task-events.yaml` | 2 Kafka channels | `task-created`, `task-updated` | — |
 
 ---
@@ -525,16 +538,17 @@ healthcheck:
 The first implementation blocked Flask startup while connecting to Kafka. If Kafka wasn't ready, the entire service failed. I wrapped the Kafka producer and every publish call in try/except:
 
 ```python
-def publish_event(topic, payload):
+def _publish(topic: str, payload: dict):
     try:
+        from kafka import KafkaProducer
         producer = KafkaProducer(
-            bootstrap_servers=os.environ.get('KAFKA_BROKERS', 'kafka:9092'),
-            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVER,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
         )
         producer.send(topic, payload)
-        producer.flush()
-    except Exception as e:
-        print(f"Warning: Could not publish to Kafka: {e}")
+        producer.flush(timeout=3)
+    except Exception as exc:
+        app.logger.warning("Kafka publish skipped (%s): %s", topic, exc)
 ```
 
 The service stays healthy and responds to REST calls even if Kafka is temporarily unavailable.
@@ -589,14 +603,20 @@ Each operation now has its own data slice. Tests pass regardless of execution or
 ## Running It Yourself
 
 ```bash
-git clone https://github.com/kanugurajesh/specmatic-taskflow
-cd specmatic-taskflow
+git clone https://github.com/kanugurajesh/Spectamic-Taskflow
+cd Spectamic-Taskflow
 
-# Full stack + REST contract tests
-docker compose up
+# Place your Specmatic license in the parent directory first:
+# ../license.txt
+
+# Full stack + REST contract tests (use --build on first run)
+docker compose up --build
+
+# Run only the contract tests
+docker compose up test-task-api test-user-api --build --abort-on-container-exit
 
 # With async event tests
-docker compose --profile async up
+docker compose --profile async up test-async --abort-on-container-exit
 
 # Frontend against mock server (no backend needed)
 docker compose --profile mock up mock-task-api frontend
@@ -607,9 +627,14 @@ docker compose --profile studio up studio
 
 # CI mode: fail fast on contract violations
 docker compose up --exit-code-from test-task-api
+
+# Tear down
+docker compose down --remove-orphans
 ```
 
 Test reports are generated at `build/reports/specmatic/test/html/index.html`.
+
+> **Note:** Always pass `--build` after changing any service code (`services/*/main.py`). Spec file changes (`.yaml`) are picked up immediately via volume mount — no rebuild needed for those.
 
 ---
 
