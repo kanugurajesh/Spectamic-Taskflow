@@ -19,17 +19,12 @@ jobs:
       - name: Start Kafka and task-service
         run: docker compose up -d --build kafka kafka-init task-service
 
-      - name: Wait for kafka-init and task-service to be ready
+      - name: Wait for task-service to be ready
         run: |
-          docker compose wait kafka-init
-          timeout 120 bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" taskflow-task-service)" = "healthy" ]; do sleep 2; done'
+          timeout 120 bash -c 'until docker ps --filter "name=taskflow-task-service" --filter "health=healthy" --format "{{.Names}}" | grep -q taskflow-task-service; do sleep 2; done'
 
       - name: Run Task API contract tests
-        run: |
-          docker compose up --build \
-            --exit-code-from test-task-api \
-            --abort-on-container-exit \
-            test-task-api
+        run: docker compose run --no-deps --rm test-task-api
 
       - name: Tear down Task API stack
         if: always()
@@ -40,14 +35,10 @@ jobs:
 
       - name: Wait for user-service to be ready
         run: |
-          timeout 60 bash -c 'until [ "$(docker inspect --format="{{.State.Health.Status}}" taskflow-user-service)" = "healthy" ]; do sleep 2; done'
+          timeout 60 bash -c 'until docker ps --filter "name=taskflow-user-service" --filter "health=healthy" --format "{{.Names}}" | grep -q taskflow-user-service; do sleep 2; done'
 
       - name: Run User API contract tests
-        run: |
-          docker compose up --build \
-            --exit-code-from test-user-api \
-            --abort-on-container-exit \
-            test-user-api
+        run: docker compose run --no-deps --rm test-user-api
 
       - name: Tear down User API stack
         if: always()
