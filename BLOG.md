@@ -513,6 +513,107 @@ This is what "AI-native infrastructure" actually means: not using AI to write co
 
 ---
 
+## Real Errors Specmatic Surfaced — and How I Fixed Them
+
+To demonstrate Specmatic's feedback loop concretely, I deliberately introduced a field rename in `task-service/main.py` — the kind of silent drift that kills multi-service systems in production — and ran the full contract test suite to capture what Specmatic actually reports.
+
+### The break: `title` → `task_title`
+
+A single-line change in the `create_task` handler:
+
+```python
+# Before (matches the spec)
+task = {
+    "id": _next_id,
+    "title": data["title"],
+    ...
+}
+
+# After (drifted from the spec)
+task = {
+    "id": _next_id,
+    "task_title": data["title"],   # ← renamed
+    ...
+}
+```
+
+### What Specmatic reported
+
+Running `docker compose up --exit-code-from test-task-api`:
+
+**Failure 1 — POST /tasks → 500 instead of 201**
+
+The service crashed immediately. The Kafka publish code still referenced `task["title"]`, which no longer existed:
+
+```
+taskflow-task-service | ERROR in app: Exception on /tasks [POST]
+taskflow-task-service |   File "/app/main.py", line 106, in create_task
+taskflow-task-service |     "title": task["title"],
+taskflow-task-service |              ~~~~^^^^^^^^^
+taskflow-task-service | KeyError: 'title'
+taskflow-task-service | 172.19.0.2 - - [POST /tasks] 500
+
+taskflow-test-task-api | +ve  Scenario: POST /tasks -> 201 ... has FAILED
+taskflow-test-task-api | Reason:
+taskflow-test-task-api |   >> RESPONSE.STATUS
+taskflow-test-task-api |       R0002: HTTP status mismatch
+taskflow-test-task-api |       Specification expected status 201 but response contained status 500
+```
+
+All 6 schema resiliency variants of `POST /tasks → 201` failed the same way.
+
+**Failure 2 — GET /tasks → schema violation (cascade)**
+
+Because the task was inserted into the in-memory store *before* the Kafka publish crashed, the malformed object (with `task_title` instead of `title`) persisted. When `GET /tasks` ran next, the list response contained those corrupt items — and Specmatic caught it at the schema layer:
+
+```
+taskflow-test-task-api | +ve  Scenario: GET /tasks -> 200 ... has FAILED
+taskflow-test-task-api | Reason:
+taskflow-test-task-api |   >> RESPONSE.BODY[3].title
+taskflow-test-task-api |       R2001: Missing required property
+taskflow-test-task-api |       Specification expected mandatory property "title" to be present
+taskflow-test-task-api |       but was missing from the response
+taskflow-test-task-api |
+taskflow-test-task-api |   >> RESPONSE.BODY[3].task_title
+taskflow-test-task-api |       R2003: Unknown property
+taskflow-test-task-api |       Property "task_title" in the response was not in the specification
+```
+
+**Final result:**
+
+```
+Tests run: 27, Successes: 19, Failures: 8, WIP: 0, Errors: 0
+89% API Coverage — FAILED (minCoveragePercentage = 100%)
+```
+
+One field rename caused **8 failures across two endpoints** — 6 from POST crashing and 2 from GET returning corrupt data — before a single human reviewer saw anything.
+
+### The fix
+
+Two things needed to be consistent:
+
+```python
+# 1. Keep the task dict key matching the spec field name
+task = {
+    "id": _next_id,
+    "title": data["title"],   # ← back to "title"
+    ...
+}
+
+# 2. The Kafka publish code already referenced task["title"] correctly
+#    — so reverting the dict key was the only change needed
+```
+
+After reverting: **27/27 tests passing, 100% coverage.**
+
+### What this demonstrates
+
+The contract test caught the break at the *exact* moment it was introduced — no integration environment, no manual testing, no waiting for another team to hit the issue. The error output told me precisely which field was wrong (`RESPONSE.BODY[3].title`), which rule was violated (`R2001`, `R2003`), and what the spec expected versus what the service returned.
+
+This is the feedback loop that makes contract-first development reliable at scale.
+
+---
+
 ## Challenges and What I Learned
 
 ### 1. Example naming symmetry is non-negotiable
