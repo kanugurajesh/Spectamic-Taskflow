@@ -606,8 +606,8 @@ Each operation now has its own data slice. Tests pass regardless of execution or
 git clone https://github.com/kanugurajesh/Spectamic-Taskflow
 cd Spectamic-Taskflow
 
-# Place your Specmatic license in the parent directory first:
-# ../license.txt
+# Copy your Specmatic Enterprise license into the project root first:
+# cp /path/to/your/license.txt ./license.txt
 
 # Full stack + REST contract tests (use --build on first run)
 docker compose up --build

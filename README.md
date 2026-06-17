@@ -2,6 +2,8 @@
 
 **AI-Native Task Management System with Executable API Contracts**
 
+![Contract Tests](https://github.com/kanugurajesh/Spectamic-Submission/actions/workflows/ci.yml/badge.svg)
+
 > A technical blog post and working project submitted for the Specmatic Full Stack AI Engineering Intern application.
 
 ---
@@ -155,12 +157,13 @@ specmatic:
 
 ## Quick Start
 
-Clone or copy this project next to the other labs so the shared license file is accessible:
+Copy your Specmatic Enterprise `license.txt` into the project root before running Docker Compose:
 
 ```
-labs/
-├── license.txt          ← shared Specmatic license
-└── specmatic-taskflow/  ← this project
+specmatic-taskflow/
+├── license.txt          ← your Specmatic Enterprise license (not committed)
+├── docker-compose.yaml
+└── ...
 ```
 
 ### 1. Run everything (services + frontend + contract tests)

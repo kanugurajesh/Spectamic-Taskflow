@@ -94,7 +94,7 @@ services:
     image: specmatic/enterprise:latest
     volumes:
       - ./:/usr/src/app
-      - ../license.txt:/specmatic/specmatic-license.txt:ro
+      - ./license.txt:/specmatic/specmatic-license.txt:ro
     environment:
       SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
     depends_on:
@@ -107,7 +107,7 @@ services:
     image: specmatic/enterprise:latest
     volumes:
       - ./:/usr/src/app
-      - ../license.txt:/specmatic/specmatic-license.txt:ro
+      - ./license.txt:/specmatic/specmatic-license.txt:ro
     environment:
       SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
     depends_on:
@@ -123,7 +123,7 @@ services:
     profiles: ["async"]
     volumes:
       - ./:/usr/src/app
-      - ../license.txt:/specmatic/specmatic-license.txt:ro
+      - ./license.txt:/specmatic/specmatic-license.txt:ro
     environment:
       SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
     depends_on:
@@ -142,7 +142,7 @@ services:
     profiles: ["mock"]
     volumes:
       - ./:/usr/src/app
-      - ../license.txt:/specmatic/specmatic-license.txt:ro
+      - ./license.txt:/specmatic/specmatic-license.txt:ro
     environment:
       SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
     command: ["mock", "./specs/openapi/task-api.yaml", "--port", "9100"]
@@ -163,7 +163,7 @@ services:
     profiles: ["studio"]
     volumes:
       - ./:/usr/src/app
-      - ../license.txt:/specmatic/specmatic-license.txt:ro
+      - ./license.txt:/specmatic/specmatic-license.txt:ro
     environment:
       SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
     command: ["studio"]

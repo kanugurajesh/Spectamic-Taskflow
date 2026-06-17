@@ -1,0 +1,46 @@
+name: Contract Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  contract-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write Specmatic license
+        run: echo "${{ secrets.SPECMATIC_LICENSE }}" > ./license.txt
+
+      - name: Run Task API contract tests
+        run: |
+          docker compose up --build \
+            --exit-code-from test-task-api \
+            --abort-on-container-exit \
+            task-service kafka kafka-init test-task-api
+
+      - name: Tear down Task API stack
+        if: always()
+        run: docker compose down --volumes
+
+      - name: Run User API contract tests
+        run: |
+          docker compose up --build \
+            --exit-code-from test-user-api \
+            --abort-on-container-exit \
+            user-service test-user-api
+
+      - name: Tear down User API stack
+        if: always()
+        run: docker compose down --volumes
+
+      - name: Upload Specmatic test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: specmatic-reports
+          path: build/reports/specmatic/
