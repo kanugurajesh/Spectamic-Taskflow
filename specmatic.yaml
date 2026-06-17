@@ -17,7 +17,7 @@ systemUnderTest:
 specmatic:
   settings:
     test:
-      schemaResiliencyTests: positiveOnly
+      schemaResiliencyTests: all
   governance:
     report:
       formats:

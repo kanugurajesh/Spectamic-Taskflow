@@ -182,7 +182,7 @@ systemUnderTest:
 specmatic:
   settings:
     test:
-      schemaResiliencyTests: positiveOnly
+      schemaResiliencyTests: all
   governance:
     report:
       formats:
@@ -200,7 +200,7 @@ Three governance settings matter here:
 
 - `minCoveragePercentage: 100` — Every single endpoint in the spec must be tested. No skipping.
 - `maxMissedOperationsInSpec: 0` — If the service has endpoints not in the spec, it fails.
-- `schemaResiliencyTests: positiveOnly` — Beyond the hand-written examples, Specmatic automatically generates all valid positive schema variations. More on this in Step 4.
+- `schemaResiliencyTests: all` — Beyond the hand-written examples, Specmatic automatically generates every valid positive schema variation *and* every invalid (negative) variation — wrong types, broken enums, missing required fields. More on this in Step 4.
 
 This makes the contract **enforcing**, not advisory.
 
@@ -293,7 +293,13 @@ All tests pass. Not because I wrote tests against my own implementation — but 
 
 One example per endpoint is a floor, not a ceiling.
 
-With `schemaResiliencyTests: positiveOnly` in `specmatic.yaml`, Specmatic automatically expands each example into every valid positive variation that the schema allows. No extra test files. No test authoring. The schema itself defines the test space.
+With `schemaResiliencyTests` in `specmatic.yaml`, Specmatic automatically expands each example into every variation the schema allows. No extra test files. No test authoring. The schema itself defines the test space. There are three modes:
+
+| Mode | What it generates |
+|------|--------------------|
+| `positiveOnly` | Every *valid* combination of enum values and optional-field presence |
+| `negativeOnly` | Every *invalid* combination — wrong types, broken enums, missing required fields |
+| `all` | Both — the full positive and negative test space |
 
 Here's what this means in practice for `PUT /tasks/{taskId}`:
 
@@ -311,18 +317,160 @@ UpdateTaskRequest:
       enum: [low, medium, high]                 # 3 values
 ```
 
-All three fields are optional. The hand-written example only covers `{"status": "completed", "assignee": "alice"}`. With `positiveOnly`, Specmatic generates all valid combinations of enum values and optional field presence — **11 test cases from one example**, automatically.
+All three fields are optional. The hand-written example only covers `{"status": "completed", "assignee": "alice"}`. On the positive side, Specmatic generates every valid combination of enum values and optional field presence. On the negative side, it also throws `assignee: 42`, `priority: "urgent"`, `status: null`, and dozens of similar mutations at the same endpoint — each one expecting a `4xx` response back.
 
-The test count jump is real:
+I run with `schemaResiliencyTests: all`. The test count jump is real:
 
-| Mode | Total tests (task-api) |
-|------|----------------------|
-| Example-only (no resiliency) | ~10 |
-| `schemaResiliencyTests: positiveOnly` | 27 |
+| Mode | Total tests (task-api) | Total tests (user-api) |
+|------|------------------------|-------------------------|
+| Example-only (no resiliency) | ~10 | ~5 |
+| `positiveOnly` | 27 | — |
+| `all` (positive + negative) | 135 | 49 |
 
-This catches bugs like: a service that handles `priority: "high"` but crashes on `priority: "low"` — something a single hand-written example would never reveal.
+This catches two different classes of bugs:
+
+- **Positive resiliency**: a service that handles `priority: "high"` but crashes on `priority: "low"` — something a single hand-written example would never reveal.
+- **Negative resiliency**: a service that *should* reject `priority: "urgent"` or `assignee: true` with a `400`, but instead silently accepts it and corrupts its own state — something no hand-written example was ever written to catch, because nobody writes examples for requests they don't expect.
 
 **One important consequence:** more tests means more mutations, which means test execution order matters. I cover how I solved this in the Challenges section.
+
+---
+
+## Turning On `schemaResiliencyTests: all` — and Fixing What It Found
+
+Flipping `positiveOnly` to `all` didn't just add more passing tests — it took the task-api suite from 27 green tests to **133 tests, 96 of them failing**. Here's the real output from that first run:
+
+```
+Tests run: 133, Successes: 37, Failures: 96, WIP: 0, Errors: 0
+```
+
+That's not noise. It's every place where the Flask services accepted garbage instead of rejecting it. Three distinct failure patterns showed up.
+
+### Failure 1 — No type or enum validation on write endpoints
+
+`POST /tasks` and `PUT /tasks/{taskId}` only checked that required fields were *truthy* — they never checked that `title` was a string, that `priority` was one of `low|medium|high`, or that `assignee` wasn't a boolean. Specmatic's negative generator throws every wrong type at every field:
+
+```
+-ve  Scenario: POST /tasks -> 4xx with the request from the example 'CREATE_TASK_201'
+     where REQUEST.BODY contains all the keys AND the key priority is mutated
+     from ("low" or "medium" or "high") to number FAILED
+Reason:
+    >> RESPONSE.STATUS
+        Expected 4xx status, but received 201
+```
+
+87 of the 96 failures were exactly this shape: `Expected 4xx status, but received 200/201`. The fix was real input validation in both services — type checks via `isinstance`, enum checks against an explicit set, applied *before* anything gets written to the in-memory store:
+
+```python
+# services/task-service/main.py
+TASK_PRIORITIES = {"low", "medium", "high"}
+TASK_STATUSES = {"pending", "in-progress", "completed"}
+
+def create_task():
+    data = request.get_json(silent=True) or {}
+
+    title = data.get("title")
+    if not isinstance(title, str) or not title:
+        return _validation_error("title is required")
+
+    priority = data.get("priority")
+    if priority not in TASK_PRIORITIES:
+        return _validation_error(f"priority must be one of {sorted(TASK_PRIORITIES)}")
+
+    if "description" in data and not isinstance(data["description"], str):
+        return _validation_error("description must be a string")
+    if "assignee" in data and not isinstance(data["assignee"], str):
+        return _validation_error("assignee must be a string")
+    ...
+```
+
+The same pattern applied to `PUT /tasks/{taskId}` (status/priority enums, assignee type) and to `user-service`'s `POST /users` (role enum). One subtlety that cost a second round of failures: checking `value is not None and not isinstance(value, str)` lets an explicit `null` slip through, because `None is not None` is `False`. The fix is to drop the `is not None` guard entirely — if the key is present, its value must satisfy the type, full stop.
+
+### Failure 2 — The contract had no `400` to validate against
+
+After adding validation, a different error appeared for `PUT /tasks/{taskId}`:
+
+```
+Reason:
+    >> RESPONSE.STATUS
+        R0002: HTTP status mismatch
+        Specification expected status 404 but response contained status 400
+```
+
+And for `GET /tasks?status=<invalid>`:
+
+```
+Reason:
+    >> RESPONSE.STATUS
+        Received 400, but the specification does not contain a 4xx or default
+        response, hence unable to verify this response
+```
+
+The service was now doing the *right* thing — returning `400` for bad input — but the OpenAPI spec never declared a `400` response for these two operations. Only `POST /tasks` had one. Specmatic enforces the contract literally: if you return a status code the spec doesn't document, that's a contract violation, even if it's semantically correct. This is the contract-first principle paying for itself — the gap was in the spec, not just the code. The fix was adding the missing response definitions to `task-api.yaml`:
+
+```yaml
+# GET /tasks
+'400':
+  description: Validation error — invalid status filter
+  content:
+    application/json:
+      schema:
+        $ref: '#/components/schemas/Error'
+      examples:
+        LIST_TASKS_400:
+          value:
+            error: "Validation failed"
+            message: "status must be one of ['completed', 'in-progress', 'pending']"
+
+# PUT /tasks/{taskId}
+'400':
+  description: Validation error — invalid field value
+  content:
+    application/json:
+      schema:
+        $ref: '#/components/schemas/Error'
+      examples:
+        UPDATE_TASK_400:
+          value:
+            error: "Validation failed"
+            message: "priority must be one of ['high', 'low', 'medium']"
+```
+
+Each new `400` needed a matching named example on the parameter/request side too (`LIST_TASKS_400` on the `status` query param, `UPDATE_TASK_400` on both the `taskId` path param and the request body) — Specmatic pairs examples by name, the same rule from Challenge 1.
+
+### Failure 3 — Flask's default 404 page broke the error schema
+
+Mutating `taskId` from a number to a string or boolean (e.g. `DELETE /tasks/true`) doesn't match Flask's `<int:task_id>` route converter, so Flask falls back to its own default 404 — an HTML page, not JSON:
+
+```
+>> RESPONSE.HEADER.Content-Type
+    R1002: Value mismatch
+    Specification expected application/json but response contained text/html; charset=utf-8
+
+>> RESPONSE.BODY
+    R1001: Type mismatch
+    Specification expected type json object but response contained value
+    "<!doctype html>\n<html lang=en>\n<title>404 Not Found</title>..."
+```
+
+The fix is a Flask-wide 404 handler that returns JSON matching the `Error` schema for any path Flask itself can't route — independent of the explicit `404` responses already returned by `get_task`/`update_task`/`delete_task` when a *valid* taskId doesn't exist:
+
+```python
+@app.errorhandler(404)
+def handle_not_found(_exc):
+    return jsonify({"error": "Not Found", "message": "The requested resource was not found"}), 404
+```
+
+### Result
+
+After all three fixes — input validation, the missing `400` contract responses, and the JSON 404 handler — task-api went from **37/133 passing to 135/135 passing** (two new explicit `400` examples added two tests), and user-api went from **30/49 to 49/49**. Both numbers were stable across repeated runs, confirming the fixes weren't masking flakiness.
+
+```
+Tests run: 135, Successes: 135, Failures: 0, WIP: 0, Errors: 0
+Tests run: 49, Successes: 49, Failures: 0, WIP: 0, Errors: 0
+```
+
+The headline: **96 negative-path bugs existed in services that had 100% positive-path contract coverage and a green CI pipeline.** Schema resiliency in `all` mode is the difference between "the API works when you use it correctly" and "the API is actually safe to expose to a client you don't control" — which, for any service called by another team, another service, or an AI agent generating its own request bodies, is the only question that matters.
 
 ---
 
@@ -432,6 +580,8 @@ echo "Exit code: $?"
 
 With `minCoveragePercentage: 100`, a developer can't ship a partial implementation. If the spec defines `DELETE /tasks/{taskId}` and the service doesn't implement it, the entire CI run fails.
 
+Because `schemaResiliencyTests: all` lives in `specmatic.yaml` rather than as a CLI flag, every CI run picks it up automatically — `docker compose run test-task-api` and `docker compose run test-user-api` both read the same config, so the GitHub Actions workflow (`.github/workflows/ci.yml`) enforces negative-path validation on every push and pull request with zero pipeline changes beyond the config file itself. There's no separate "resiliency" job to maintain or forget to run — it's the same job, just testing a larger space.
+
 Specmatic generates HTML reports at `build/reports/specmatic/test/html/index.html`. These show exactly which scenarios passed, which failed, and the diff between expected and actual responses — the artifact that goes into pull request reviews.
 
 The governance model I enforced:
@@ -505,10 +655,10 @@ This is what "AI-native infrastructure" actually means: not using AI to write co
 
 ## Contract Coverage at a Glance
 
-| Spec File | Endpoints / Channels | Named Examples | Tests with `positiveOnly` |
-|-----------|---------------------|----------------|--------------------------|
-| `specs/openapi/task-api.yaml` | 5 REST endpoints | 10 (200, 201, 204, 400, 404 scenarios) | 27 |
-| `specs/openapi/user-api.yaml` | 3 REST endpoints | 5 (201, 400, 200, 200, 404) | expanded automatically |
+| Spec File | Endpoints / Channels | Named Examples | Tests with `schemaResiliencyTests: all` |
+|-----------|---------------------|----------------|------------------------------------------|
+| `specs/openapi/task-api.yaml` | 5 REST endpoints | 12 (200, 201, 204, 400, 404 scenarios) | 135 |
+| `specs/openapi/user-api.yaml` | 3 REST endpoints | 5 (201, 400, 200, 200, 404) | 49 |
 | `specs/asyncapi/task-events.yaml` | 2 Kafka channels | `task-created`, `task-updated` | — |
 
 ---
@@ -698,6 +848,10 @@ DELETE_TASK_204: value: 3  # task 3
 ```
 
 Each operation now has its own data slice. Tests pass regardless of execution order.
+
+### 7. `schemaResiliencyTests: all` requires the spec and the service to grow together
+
+Switching from `positiveOnly` to `all` wasn't just a config flag — every negative test that found a missing `400` response meant the *spec* was incomplete, not just the code. I'd documented `400` for `POST /tasks` and `POST /users` from day one (because "what if a required field is missing" is an obvious case to write an example for), but `GET /tasks?status=` and `PUT /tasks/{taskId}` had no documented error path for invalid input, because nobody had written a negative example for them. Negative resiliency testing finds exactly the blind spots that example-driven testing structurally can't — the requests nobody thought to write down. The fix pattern is always the same: add the `4xx` response to the spec, add a validation check to the service that returns it, in that order.
 
 ---
 

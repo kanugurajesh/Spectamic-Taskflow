@@ -9,6 +9,12 @@ users = {
     "bob": {"id": "bob", "name": "Bob Smith", "email": "bob@example.com", "role": "qa"},
 }
 
+USER_ROLES = {"developer", "qa", "manager", "admin"}
+
+
+def _validation_error(message):
+    return jsonify({"error": "Validation failed", "message": message}), 400
+
 
 @app.route("/health", methods=["GET", "HEAD"])
 def health():
@@ -28,9 +34,11 @@ def list_users():
 @app.route("/users", methods=["POST"])
 def create_user():
     data = request.get_json(silent=True) or {}
-    for field in ("id", "name", "email", "role"):
-        if not data.get(field):
-            return jsonify({"error": "Validation failed", "message": f"{field} is required"}), 400
+    for field in ("id", "name", "email"):
+        if not isinstance(data.get(field), str) or not data.get(field):
+            return _validation_error(f"{field} is required")
+    if data.get("role") not in USER_ROLES:
+        return _validation_error(f"role must be one of {sorted(USER_ROLES)}")
     users[data["id"]] = data
     return jsonify(data), 201
 

@@ -18,6 +18,8 @@ paths:
           examples:
             TASKS_200_OK:
               value: in-progress
+            LIST_TASKS_400:
+              value: archived
       responses:
         '200':
           description: List of tasks
@@ -37,6 +39,17 @@ paths:
                       assignee: "alice"
                       priority: "high"
                       createdAt: "2024-01-15T10:00:00Z"
+        '400':
+          description: Validation error — invalid status filter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                LIST_TASKS_400:
+                  value:
+                    error: "Validation failed"
+                    message: "status must be one of ['completed', 'in-progress', 'pending']"
 
     post:
       summary: Create a new task
@@ -142,6 +155,8 @@ paths:
               value: 2
             UPDATE_TASK_404:
               value: 999
+            UPDATE_TASK_400:
+              value: 2
       requestBody:
         required: true
         content:
@@ -156,6 +171,9 @@ paths:
               UPDATE_TASK_404:
                 value:
                   status: "completed"
+              UPDATE_TASK_400:
+                value:
+                  priority: "urgent"
       responses:
         '200':
           description: Task updated
@@ -184,6 +202,17 @@ paths:
                   value:
                     error: "Not Found"
                     message: "Task with id 999 not found"
+        '400':
+          description: Validation error — invalid field value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                UPDATE_TASK_400:
+                  value:
+                    error: "Validation failed"
+                    message: "priority must be one of ['high', 'low', 'medium']"
 
     delete:
       summary: Delete a task

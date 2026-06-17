@@ -42,7 +42,7 @@ This gets worse with AI coding agents. When you ask an LLM to generate a service
 |---|---|
 | REST contract testing (OpenAPI 3.0.1) | `specs/openapi/task-api.yaml`, `user-api.yaml` |
 | Async event contract testing (AsyncAPI 3.0.0) | `specs/asyncapi/task-events.yaml` |
-| Schema resiliency testing (`positiveOnly`) | `specmatic.yaml` → `settings.test.schemaResiliencyTests` |
+| Schema resiliency testing (`all` — positive + negative) | `specmatic.yaml` → `settings.test.schemaResiliencyTests` |
 | Service virtualization (mock server) | `--profile mock` |
 | Governance: 100% coverage enforcement | `specmatic.yaml` |
 | Specmatic Studio (visual contract IDE) | `--profile studio` |
@@ -135,13 +135,13 @@ Once the REST layer was solid, I extended the approach to event-driven messaging
 
 ### Step 5 — Add governance and schema resiliency
 
-The final piece was enforcing that contracts don't rot, and that the service handles every valid input the spec allows — not just the single example written per endpoint. In `specmatic.yaml`:
+The final piece was enforcing that contracts don't rot, that the service handles every valid input the spec allows, and that it correctly *rejects* every invalid input — not just the single example written per endpoint. In `specmatic.yaml`:
 
 ```yaml
 specmatic:
   settings:
     test:
-      schemaResiliencyTests: positiveOnly
+      schemaResiliencyTests: all
   governance:
     successCriteria:
       minCoveragePercentage: 100
@@ -149,7 +149,7 @@ specmatic:
       enforce: true
 ```
 
-`schemaResiliencyTests: positiveOnly` tells Specmatic to expand each example into all valid positive schema variations. For example, `PUT /tasks/{taskId}` has a request body with three optional enum fields (`status`, `priority`, `assignee`). Instead of testing one hand-written example, Specmatic generates all valid combinations — 11 tests instead of 1. This catches bugs like an enum value the service forgot to handle, or an optional field combination that produces a malformed response.
+`schemaResiliencyTests: all` tells Specmatic to expand each example into every valid positive schema variation *and* every invalid negative variation. For example, `PUT /tasks/{taskId}` has a request body with three optional enum fields (`status`, `priority`, `assignee`). On the positive side, Specmatic generates all valid combinations — catching bugs like an enum value the service forgot to handle. On the negative side, it also sends wrong types (`assignee: true`), broken enums (`priority: "urgent"`), and nulls for every field — each expecting a `4xx` response. This is strictly more thorough than `positiveOnly`, and it's what's run in CI here: it catches services that crash or silently corrupt state on malformed input, not just services that mishandle valid-but-unusual input.
 
 `minCoveragePercentage: 100` means a service that only partially implements its contract — even if all implemented endpoints pass — will still fail CI. The spec is the floor, not a suggestion.
 
@@ -216,19 +216,19 @@ docker compose up test-user-api
 - Every declared endpoint is reachable
 - Response status codes match examples
 - Response bodies conform to the schema (required fields, types, enums)
-- All valid positive schema variations are exercised (`schemaResiliencyTests: positiveOnly`)
+- Every valid AND invalid schema variation is exercised (`schemaResiliencyTests: all`)
 - 100% operation coverage is enforced via `specmatic.yaml`
 
 ### Schema Resiliency Testing
 
-With `schemaResiliencyTests: positiveOnly` in `specmatic.yaml`, Specmatic automatically expands each example into the full space of valid inputs defined by the schema. This is applied to both services:
+With `schemaResiliencyTests: all` in `specmatic.yaml`, Specmatic automatically expands each example into the full space of valid *and* invalid inputs defined by the schema. This is applied to both services:
 
 ```bash
 docker compose up test-task-api --build
 docker compose up test-user-api --build
 ```
 
-For `PUT /tasks/{taskId}`, the `UpdateTaskRequest` schema has three optional enum fields. Specmatic generates 11 test variations covering every valid combination of `status`, `priority`, and `assignee` values — without any additional example authoring. A service that only handles the documented example but silently breaks on `priority: "low"` will be caught.
+For `PUT /tasks/{taskId}`, the `UpdateTaskRequest` schema has three optional enum fields. On the positive side, Specmatic generates every valid combination of `status`, `priority`, and `assignee` values — without any additional example authoring. A service that only handles the documented example but silently breaks on `priority: "low"` will be caught. On the negative side, it also sends invalid types and broken enum values (`priority: "urgent"`, `assignee: true`) and expects a `4xx` response — catching services that accept malformed input instead of rejecting it.
 
 ### Mock Server (Consumer-Driven Development)
 
@@ -380,7 +380,7 @@ REST contracts are well understood, but async event schemas are often left unval
 The `minCoveragePercentage: 100` setting means a service that partially implements its contract will fail CI. This is the difference between a spec that rots and one that stays alive.
 
 **5. Schema resiliency reveals what examples hide.**
-A single example per endpoint only proves the service handles that one case. `schemaResiliencyTests: positiveOnly` expands each example into all valid schema variations automatically, exposing gaps that hand-written examples never reach.
+A single example per endpoint only proves the service handles that one case. `schemaResiliencyTests: all` expands each example into every valid *and* invalid schema variation automatically, exposing both the gaps hand-written examples never reach and the input the service should be rejecting but silently accepts instead.
 
 **6. Test isolation is critical for stateful services.**
 Schema resiliency generates more tests, which means more mutations. A DELETE test that removes the same task ID that a GET test relies on causes cascading failures. The fix is dedicated seed data per operation: task 1 for GET (read-only), task 2 for PUT (idempotent), task 3 for DELETE (disposable). Starting `_next_id` at 100 prevents POST tests from colliding with seeded IDs.
