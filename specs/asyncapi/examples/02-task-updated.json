@@ -1,0 +1,36 @@
+{
+  "id": "task-updated-example",
+  "name": "TASK_UPDATED_EXAMPLE",
+  "before": [
+    {
+      "type": "http",
+      "wait": "PT1S",
+      "http-request": {
+        "baseUrl": "http://task-service:8080",
+        "path": "/tasks/2",
+        "method": "PUT",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "status": "in-progress",
+          "assignee": "alice"
+        }
+      },
+      "http-response": {
+        "status": 200
+      },
+      "timeout": "PT30S"
+    }
+  ],
+  "send": {
+    "topic": "task-updated",
+    "payload": {
+      "taskId": "(integer)",
+      "previousStatus": "pending",
+      "newStatus": "in-progress",
+      "updatedBy": "alice",
+      "timestamp": "(datetime)"
+    }
+  }
+}

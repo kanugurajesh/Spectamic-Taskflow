@@ -12,9 +12,14 @@ systemUnderTest:
     runOptions:
       asyncapi:
         type: test
+        subscriberReadinessWaitTime: 5000
         servers:
           - host: kafka:9092
             protocol: kafka
+    data:
+      examples:
+        - directories:
+            - specs/asyncapi/examples
 
 specmatic:
   license:

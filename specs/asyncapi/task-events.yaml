@@ -33,15 +33,6 @@ operations:
     summary: Publish a task-created event when a new task is created via the REST API
     messages:
       - $ref: '#/channels/task-created/messages/TaskCreated'
-    examples:
-      - name: TASK_CREATED_EXAMPLE
-        payload:
-          taskId: 1
-          title: "Implement Login Feature"
-          status: "pending"
-          assignee: "alice"
-          priority: "high"
-          timestamp: "2024-01-15T10:00:00Z"
 
   publishTaskUpdated:
     action: send
@@ -50,14 +41,6 @@ operations:
     summary: Publish a task-updated event when a task status changes
     messages:
       - $ref: '#/channels/task-updated/messages/TaskUpdated'
-    examples:
-      - name: TASK_UPDATED_EXAMPLE
-        payload:
-          taskId: 1
-          previousStatus: "pending"
-          newStatus: "in-progress"
-          updatedBy: "alice"
-          timestamp: "2024-01-15T11:00:00Z"
 
 components:
   messages:

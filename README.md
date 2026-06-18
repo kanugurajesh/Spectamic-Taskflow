@@ -258,6 +258,8 @@ docker compose --profile async up test-async
 
 Specmatic subscribes to the `task-created` and `task-updated` Kafka topics, triggers task mutations via the Task Service REST API, and then validates that the published messages conform to the AsyncAPI schema.
 
+This also runs automatically in CI (`.github/workflows/ci.yml`), right after the Task API REST contract tests, while Kafka and the Task Service are still up.
+
 ### Specmatic Studio
 
 Visual IDE for exploring and editing contracts in the browser:

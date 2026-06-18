@@ -1,0 +1,38 @@
+{
+  "id": "task-created-example",
+  "name": "TASK_CREATED_EXAMPLE",
+  "before": [
+    {
+      "type": "http",
+      "wait": "PT1S",
+      "http-request": {
+        "baseUrl": "http://task-service:8080",
+        "path": "/tasks",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "title": "Implement Login Feature",
+          "assignee": "alice",
+          "priority": "high"
+        }
+      },
+      "http-response": {
+        "status": 201
+      },
+      "timeout": "PT30S"
+    }
+  ],
+  "send": {
+    "topic": "task-created",
+    "payload": {
+      "taskId": "(integer)",
+      "title": "Implement Login Feature",
+      "status": "pending",
+      "assignee": "alice",
+      "priority": "high",
+      "timestamp": "(datetime)"
+    }
+  }
+}

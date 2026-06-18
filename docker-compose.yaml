@@ -123,6 +123,7 @@ services:
     profiles: ["async"]
     volumes:
       - ./:/usr/src/app
+      - ./specmatic-async.yaml:/usr/src/app/specmatic.yaml:ro
       - ./license.txt:/specmatic/specmatic-license.txt:ro
     environment:
       SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
@@ -132,7 +133,7 @@ services:
       task-service:
         condition: service_healthy
     entrypoint: ["sh", "-lc"]
-    command: ["sleep 5 && specmatic test --config=./specmatic-async.yaml"]
+    command: ["sleep 5 && specmatic test"]
 
   # ─── Mock Server (--profile mock) ────────────────────────────────────────────
 
