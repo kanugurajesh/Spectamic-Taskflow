@@ -256,9 +256,9 @@ The Task Service publishes events to Kafka when tasks are created or updated. Sp
 docker compose --profile async up test-async
 ```
 
-Specmatic subscribes to the `task-created` and `task-updated` Kafka topics, triggers task mutations via the Task Service REST API, and then validates that the published messages conform to the AsyncAPI schema.
+Specmatic subscribes to the `task-created` and `task-updated` Kafka topics, then runs the `before` hooks defined in `specs/asyncapi/examples/` — each one issues a real HTTP call against the Task Service (e.g. `POST /tasks`) — and validates that the resulting published messages conform to the AsyncAPI schema.
 
-This also runs automatically in CI (`.github/workflows/ci.yml`), right after the Task API REST contract tests, while Kafka and the Task Service are still up.
+This also runs automatically in CI (`.github/workflows/ci.yml`), right after Kafka and the Task Service come up and before the Task API REST contract tests run, so it always exercises the service's known seed data (tasks 1–3) rather than state left over from another test run.
 
 ### Specmatic Studio
 
@@ -287,7 +287,8 @@ specmatic-taskflow/
 │   │   ├── task-api.yaml           ← Task Service contract (5 endpoints, isolated example IDs)
 │   │   └── user-api.yaml           ← User Service contract (3 endpoints, 5 examples incl. 400)
 │   └── asyncapi/
-│       └── task-events.yaml        ← Task event contracts (2 channels)
+│       ├── task-events.yaml        ← Task event contracts (2 channels)
+│       └── examples/               ← Before-hooks that trigger publishes via the REST API
 │
 ├── frontend/
 │   ├── index.html                  ← Kanban board SPA (Tailwind + vanilla JS)
@@ -408,7 +409,15 @@ My initial AsyncAPI spec had `host: localhost:9092`. This works on the host mach
 
 ### 4. Making Kafka publish non-blocking
 
-The task service imports `kafka-python` and tries to connect on the first publish. If Kafka isn't ready yet, the connection throws. Wrapping the publish in a `try/except` means the service starts and responds to healthchecks even before Kafka is fully up — the REST contract tests still pass, and the async tests run separately after Kafka is confirmed healthy.
+The task service tries to connect to Kafka on the first publish. If Kafka isn't ready yet, the connection throws. Wrapping the publish in a `try/except` means the service starts and responds to healthchecks even before Kafka is fully up — the REST contract tests still pass, and the async tests run separately after Kafka is confirmed healthy. That same `try/except` also hid a real bug for a while: `kafka-python==2.0.2` doesn't work on Python 3.12 (`No module named 'kafka.vendor.six.moves'`), so every publish was silently swallowed and logged as a warning — the contract was never actually being tested until CI started running the async suite and reported 0 messages received. Switching to `kafka-python-ng` (a maintained drop-in fork) fixed it.
+
+### 4a. AsyncAPI test mode doesn't take a `--config` flag
+
+`specmatic test --config=specmatic-async.yaml` silently falls back to the default `specmatic.yaml` for AsyncAPI tests — the `--config` flag only exists for the OpenAPI test path. Since `specs-task-flow`'s repo root is mounted wholesale into every Specmatic container, the real `specmatic.yaml` (the REST config) was always shadowing the async one. The fix: bind-mount `specmatic-async.yaml` over `/usr/src/app/specmatic.yaml` for the `test-async` service only, so that container's default config lookup resolves to the async config without touching the REST services' config.
+
+### 4b. AsyncAPI message examples need an external fixture + a `before` hook to actually drive anything
+
+Inline `examples` on an AsyncAPI Message object are useful for documentation, but a "send" operation needs something to actually trigger the publish — Specmatic doesn't call your REST API on its own. The working pattern is external JSON example files (`specs/asyncapi/examples/`, referenced via `data.examples.directories` in `specmatic-async.yaml`) with a `before` array that issues the real HTTP request (e.g. `POST /tasks`) before Specmatic listens for the resulting Kafka message.
 
 ### 5. Specmatic Enterprise requires `/actuator/health` to run tests
 

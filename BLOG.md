@@ -56,7 +56,8 @@ specmatic-taskflow/
 │   │   ├── task-api.yaml          # Task Service contract
 │   │   └── user-api.yaml          # User Service contract
 │   └── asyncapi/
-│       └── task-events.yaml       # Kafka event contract
+│       ├── task-events.yaml       # Kafka event contract
+│       └── examples/              # Before-hooks that trigger publishes via the REST API
 ├── services/
 │   ├── task-service/              # Flask + Kafka publisher
 │   └── user-service/              # Flask user registry
@@ -519,11 +520,11 @@ channels:
               timestamp: "2024-01-15T10:00:00Z"
 ```
 
-The async contract test works differently from REST tests. Instead of Specmatic acting as a client hitting endpoints, the `test-async` service:
+The async contract test works differently from REST tests. Instead of Specmatic acting as a client hitting endpoints, the `test-async` process:
 
-1. Triggers a task creation via the REST API (`POST /tasks`)
-2. Listens on the Kafka `task-created` topic
-3. Validates the consumed message against the AsyncAPI schema
+1. Subscribes to the Kafka `task-created` and `task-updated` topics
+2. Runs a `before` hook that issues a real HTTP call against the Task Service (e.g. `POST /tasks`)
+3. Validates the message that publish produces against the AsyncAPI schema
 
 ```yaml
 # specmatic-async.yaml
@@ -541,12 +542,39 @@ systemUnderTest:
     runOptions:
       asyncapi:
         type: test
+        subscriberReadinessWaitTime: 5000
         servers:
           - host: kafka:9092
             protocol: kafka
+    data:
+      examples:
+        - directories:
+            - specs/asyncapi/examples
 ```
 
 > **Gotcha I hit:** The AsyncAPI spec initially had `host: localhost:9092`. Inside Docker's network, services communicate by service name, not localhost. Changing to `host: kafka:9092` (matching the Docker Compose service name) fixed the connection immediately. Always verify your spec's server hosts match your runtime network topology.
+
+> **Gotcha I hit (the expensive one):** Inline `examples` on an AsyncAPI Message are documentation only — nothing actually calls the REST API to make the service publish. I initially put the example payload directly on the `operations` entry, which AsyncAPI 3.0 rejects (`examples` is only valid on `Message`, not `Operation`). Moving it to the message fixed parsing, but the test still timed out waiting for a Kafka message, because there was still nothing driving the publish. The actual mechanism is external JSON example files (`specs/asyncapi/examples/`, wired up via `data.examples.directories`) with a `before` array that fires the real HTTP request:
+>
+> ```json
+> {
+>   "name": "TASK_CREATED_EXAMPLE",
+>   "before": [
+>     {
+>       "type": "http",
+>       "http-request": { "baseUrl": "http://task-service:8080", "path": "/tasks", "method": "POST", "body": { "title": "...", "priority": "high" } },
+>       "http-response": { "status": 201 }
+>     }
+>   ],
+>   "send": { "topic": "task-created", "payload": { "taskId": "(integer)", "title": "...", "timestamp": "(datetime)" } }
+> }
+> ```
+>
+> `(integer)` / `(datetime)` are Specmatic's type-matcher placeholders — useful here since the published `taskId` and `timestamp` are server-generated and can't be hardcoded.
+
+> **Gotcha I hit (CI-only):** `specmatic test --config=specmatic-async.yaml` quietly does nothing for AsyncAPI — `--config` only applies to the OpenAPI test path. Since the whole repo (including the real `specmatic.yaml`) is bind-mounted into every Specmatic container, the async test was silently running the REST config and reporting "no test scenarios found." Fixed by bind-mounting `specmatic-async.yaml` over `/usr/src/app/specmatic.yaml` for the `test-async` service specifically, so its default config lookup resolves correctly without touching the other services.
+
+> **Gotcha I hit (the one that mattered most):** Once the wiring was right, the test still failed — every message timed out. The task service's `_publish()` wraps the Kafka call in a `try/except` (so the service can start before Kafka is ready), and that swallowed an exception every single time: `kafka-python==2.0.2` doesn't work on Python 3.12 (`No module named 'kafka.vendor.six.moves'`). The Kafka publish had never actually succeeded — it just looked fine because nothing was asserting on it until the async contract test existed. Switching to `kafka-python-ng` (a maintained drop-in fork, same `import kafka`) fixed it. This is exactly the failure mode contract testing is supposed to catch: a swallowed exception that made the service *look* healthy while silently dropping every event.
 
 ---
 
