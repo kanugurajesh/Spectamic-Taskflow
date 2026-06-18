@@ -26,6 +26,9 @@ jobs:
       - name: "Run Task API contract tests (incl. schema resiliency: all)"
         run: docker compose run --no-deps --rm test-task-api
 
+      - name: "Run async contract tests"
+        run: docker compose --profile async run --no-deps --rm test-async
+
       - name: Tear down Task API stack
         if: always()
         run: docker compose down --volumes
