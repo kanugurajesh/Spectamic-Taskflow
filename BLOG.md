@@ -624,6 +624,106 @@ This turns the OpenAPI spec from passive documentation into an active quality ga
 
 ---
 
+## Step 8: Authentication & Authorization with Multiple OpenAPI Security Schemes
+
+Contract testing without auth testing has a blind spot: a service can satisfy every schema and still leak data to anyone who asks. I closed that gap by borrowing the pattern from the neighboring `labs/api-security-schemes` lab — vary the security scheme by HTTP method, then let Specmatic prove the service actually enforces whichever one is declared.
+
+`task-api.yaml` ended up with three schemes on one spec:
+
+```yaml
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic          # GET — any valid account may read
+    bearerAuth:
+      type: http
+      scheme: bearer          # POST/PUT — developer, manager, or admin role
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key         # DELETE — admin role only
+```
+
+`user-api.yaml` uses one scheme (`apiKeyAuth`) everywhere, with an elevated-role check bolted onto `POST /users` only.
+
+Both Flask services enforce this with small decorator functions (`require_basic_auth`, `require_bearer_auth(allowed_roles)`, `require_api_key(allowed_roles)`) backed by a hardcoded demo identity table — four accounts (`alice`/developer, `bob`/qa, `diana`/manager, `charlie`/admin) with a password, a bearer token, and an API key each. A decorator returns `401` for a missing/invalid credential and `403` for a valid credential whose role isn't in the allowlist:
+
+```python
+def require_bearer_auth(allowed_roles):
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            auth_header = request.headers.get("Authorization", "")
+            if not auth_header.startswith("Bearer "):
+                return _unauthorized("Bearer token required")
+            role = _BEARER_TOKENS.get(auth_header[len("Bearer "):].strip())
+            if not role:
+                return _unauthorized("Invalid bearer token")
+            if role not in allowed_roles:
+                return _forbidden(f"role '{role}' is not permitted to perform this action")
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+```
+
+### Gotcha 1: `securitySchemes` only work through `systemUnderTest`, not the ad hoc CLI form
+
+This one took real digging through `specmatic-schema.json` to resolve. Before this change, `test-task-api` and `test-user-api` both ran `specmatic test <spec-file> --testBaseURL=...` — a positional-file invocation. That form clearly ignores `systemUnderTest.service` entirely: it was already working for `user-api.yaml` even though the `specmatic.yaml` in the repo only ever declared `task-api.yaml` under `systemUnderTest`. Top-level `specmatic:` settings (`governance`, `schemaResiliencyTests`, `license`) are read regardless of invocation style, but the schema shows `securitySchemes` lives three levels deeper — `systemUnderTest.service.runOptions.openapi.specs[].spec.securitySchemes` — a path that's only consulted when Specmatic resolves the spec *through* `systemUnderTest`, not via a bare file argument.
+
+So adding `security:` to the specs and a `securitySchemes` block to `specmatic.yaml` would have been silently ignored by the existing docker-compose commands. The fix: switch both test containers to the bare `specmatic test` form (same as `test-async` already used), letting `systemUnderTest.service.definitions` supply the spec and `runOptions.openapi.baseUrl` supply the target. Since `systemUnderTest.service` is singular, the User API needed its own `specmatic-user.yaml` — bind-mounted over `/usr/src/app/specmatic.yaml` for that one container, the exact trick already in place for `specmatic-async.yaml`.
+
+I validated both new config files against `specmatic-schema.json` with `jsonschema.validate()` before touching docker-compose — it confirmed the shape was structurally legal, but that turned out not to be the whole story.
+
+### Gotcha 2: schema-valid isn't the same as working — `securitySchemes` also needs a matching `id`
+
+The Specmatic Enterprise license had lapsed while I was building this, so the first real Docker run only happened after it was renewed. The first attempt still failed: every positive scenario came back `401`, including plain `GET /tasks`. Grepping the test output for `Authorization` showed why — Specmatic was sending fuzzed, auto-generated credentials (`Authorization: Bearer molestiae`, `Authorization: Basic RUpTWE46TFVUSk4=`) instead of the ones in `specmatic.yaml`. My `runOptions.openapi.specs[]` entry had no `id`, and neither did the `definitions.specs` entry it was supposed to override — with nothing to correlate them, Specmatic silently fell back to generated values instead of raising an error. The fix, once I looked back at how the reference lab does it, was to give both sides a matching `id` (`taskApiSpec` / `userApiSpec`):
+
+```yaml
+systemUnderTest:
+  service:
+    definitions:
+      - definition:
+          specs:
+            - spec:
+                id: taskApiSpec
+                path: task-api.yaml
+    runOptions:
+      openapi:
+        specs:
+          - spec:
+              id: taskApiSpec
+              securitySchemes: { ... }
+```
+
+That got every positive scenario back to `200`/`201`/`204` — but the run still exited non-zero. Coverage had dropped to 58%, because the coverage report tracks every response code declared in an operation's `responses:` map as its own gradable unit, and the `401`/`403` responses I'd added (with no example that could ever trigger them, since the configured credential always succeeds) showed up as "not tested." The fix was to just drop those response declarations — `security:` on the operation is what makes Specmatic enforce and test authentication; documenting the 401/403 outcomes as formal `responses` entries bought nothing and cost 42 percentage points of governance. Both bugs only showed up once I actually ran the containers — `jsonschema.validate()` against the config schema and `openapi-spec-validator` against the specs both passed the whole time, because both files were legal, just not correctly *wired*.
+
+### What Specmatic tests here, and what it doesn't
+
+Running the suite with the securitySchemes correctly wired re-validates every existing example and schema-resiliency scenario against an authenticated backend, using a single admin-level credential (`charlie`) configured per scheme — verified live: `test-task-api` 135/135 at 100% coverage, `test-user-api` 49/49 at 100%, `test-async` 2/2. Get the token wrong and every scenario for that operation fails `401` — the same signal the reference lab demonstrates.
+
+What it doesn't do: assert that `bob` (qa) gets `403` on `POST /tasks` while `charlie` (admin) gets `201`. OpenAPI's `security` keyword models *authentication*, not custom authorization rules, and a single contract-test run applies one configured credential per scheme — it has no notion of "try this operation as five different roles and expect five different outcomes." That check is real, enforced application logic, verified directly:
+
+```bash
+curl -i -X POST http://localhost:8080/tasks \
+  -H "Authorization: Bearer tok_bob_qa_2e7a" \
+  -H "Content-Type: application/json" -d '{"title":"x","priority":"low"}'
+# 403 Forbidden — qa role not permitted
+
+curl -X POST http://localhost:8080/tasks \
+  -H "Authorization: Bearer tok_alice_dev_9f1c" \
+  -H "Content-Type: application/json" -d '{"title":"x","priority":"low"}'
+# 201 Created — developer role permitted
+```
+
+I verified the full matrix (401/403/200/201/204 across every operation and every role) by running both Flask services directly with `python main.py` and driving them with `curl` — no Docker or Specmatic license required for this part, since it's testing the application's own logic rather than the contract.
+
+Two smaller downstream fixes came out of turning this on:
+- The async `before`-hooks (`specs/asyncapi/examples/*.json`) call `POST /tasks` and `PUT /tasks/2` directly — they now carry an `Authorization: Bearer` header with the admin token, or `test-async` would start failing its setup calls with `401`.
+- The frontend's "Real Service" target hits `task-service:8080` directly from the browser, so it now sends the same demo admin credentials on every request — clearly commented as a lab/demo shortcut, not a login flow.
+
+---
+
 ## The AI-Native Angle: Building Feedback Loops for Coding Agents
 
 Here's why this architecture matters beyond traditional development.
@@ -880,6 +980,10 @@ Each operation now has its own data slice. Tests pass regardless of execution or
 ### 7. `schemaResiliencyTests: all` requires the spec and the service to grow together
 
 Switching from `positiveOnly` to `all` wasn't just a config flag — every negative test that found a missing `400` response meant the *spec* was incomplete, not just the code. I'd documented `400` for `POST /tasks` and `POST /users` from day one (because "what if a required field is missing" is an obvious case to write an example for), but `GET /tasks?status=` and `PUT /tasks/{taskId}` had no documented error path for invalid input, because nobody had written a negative example for them. Negative resiliency testing finds exactly the blind spots that example-driven testing structurally can't — the requests nobody thought to write down. The fix pattern is always the same: add the `4xx` response to the spec, add a validation check to the service that returns it, in that order.
+
+### 8. `securitySchemes` needs `systemUnderTest`, not ad hoc CLI args — and authorization isn't authentication
+
+Covered in full in Step 8, but the short version: Specmatic only reads `runOptions.openapi.specs[].spec.securitySchemes` when it resolves a spec through `systemUnderTest.service` (not a bare `specmatic test <file> --testBaseURL=...` invocation), and even then it only applies them once the `definitions.specs` entry and the `runOptions` override share an explicit matching `id` — omit it and Specmatic silently falls back to fuzzed, auto-generated credentials with no error. Declaring `401`/`403` as formal `responses` entries also has a cost: the governance coverage report tracks every declared response code as its own unit, so codes with no reachable example (a working credential never triggers them) count as "not tested" and drag the score down. And OpenAPI's `security` keyword models authentication, not per-role authorization, so a single contract-test run can prove a credential is required without ever proving that a *low-privileged* credential is correctly rejected — that half had to be verified directly against the running services instead. All of this — the `id` requirement and the coverage cost in particular — only became visible once the Enterprise license was renewed and the suite actually ran in Docker; schema/spec validation alone had passed the whole time.
 
 ---
 

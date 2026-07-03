@@ -8,6 +8,8 @@ paths:
   /tasks:
     get:
       summary: List all tasks
+      security:
+        - basicAuth: []
       parameters:
         - name: status
           in: query
@@ -53,6 +55,8 @@ paths:
 
     post:
       summary: Create a new task
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -102,6 +106,8 @@ paths:
   /tasks/{taskId}:
     get:
       summary: Get a task by ID
+      security:
+        - basicAuth: []
       parameters:
         - name: taskId
           in: path
@@ -144,6 +150,8 @@ paths:
 
     put:
       summary: Update a task
+      security:
+        - bearerAuth: []
       parameters:
         - name: taskId
           in: path
@@ -216,6 +224,8 @@ paths:
 
     delete:
       summary: Delete a task
+      security:
+        - apiKeyAuth: []
       parameters:
         - name: taskId
           in: path
@@ -309,3 +319,18 @@ components:
           type: string
         message:
           type: string
+
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: HTTP Basic Authentication — required to read tasks (any valid account)
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Bearer token authentication — required to create or update tasks (developer, manager, or admin role)
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key authentication — required to delete tasks (admin role only)

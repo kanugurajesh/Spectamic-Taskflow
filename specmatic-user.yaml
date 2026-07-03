@@ -9,25 +9,19 @@ systemUnderTest:
               directory: specs/openapi
           specs:
             - spec:
-                id: taskApiSpec
-                path: task-api.yaml
+                id: userApiSpec
+                path: user-api.yaml
     runOptions:
       openapi:
         type: test
-        baseUrl: http://task-service:8080
+        baseUrl: http://user-service:8081
         specs:
           - spec:
-              id: taskApiSpec
+              id: userApiSpec
               securitySchemes:
-                basicAuth:
-                  type: basicAuth
-                  token: ${TASK_BASIC_AUTH_TOKEN:Y2hhcmxpZTpwYXNzd29yZDQ1Ng==}
-                bearerAuth:
-                  type: bearer
-                  token: ${TASK_BEARER_TOKEN:tok_charlie_admin_8a4f}
                 apiKeyAuth:
                   type: apiKey
-                  token: ${TASK_API_KEY:key_charlie_admin_7788}
+                  token: ${USER_API_KEY:key_charlie_admin_7788}
 
 specmatic:
   settings:

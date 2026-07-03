@@ -306,6 +306,13 @@
   let tasks = [];
   let activePanel = null;
 
+  // Demo credentials for the "Real Service" target (:8080), which enforces auth per
+  // the security schemes in task-api.yaml. This is a lab/demo app, not a login flow —
+  // the mock server (:9100) ignores these headers entirely.
+  const DEMO_BASIC_AUTH = 'Basic ' + btoa('charlie:password456');
+  const DEMO_BEARER_AUTH = 'Bearer tok_charlie_admin_8a4f';
+  const DEMO_API_KEY = 'key_charlie_admin_7788';
+
   // ── API switcher ──────────────────────────────────────────────────────────────
   function setApi(url, optId) {
     API = url;
@@ -426,7 +433,7 @@
   async function loadTasks() {
     renderSkeletons();
     try {
-      const res = await fetch(`${API}/tasks`);
+      const res = await fetch(`${API}/tasks`, { headers: { 'Authorization': DEMO_BASIC_AUTH } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       tasks = await res.json();
       renderBoard();
@@ -483,7 +490,7 @@
     try {
       const res = await fetch(`${API}/tasks`, {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
+        headers: {'Content-Type':'application/json', 'Authorization': DEMO_BEARER_AUTH},
         body: JSON.stringify({
           title:    document.getElementById('f-title').value.trim(),
           description: document.getElementById('f-desc').value.trim(),
@@ -570,7 +577,7 @@
     try {
       const res = await fetch(`${API}/tasks/${id}`, {
         method: 'PUT',
-        headers: {'Content-Type':'application/json'},
+        headers: {'Content-Type':'application/json', 'Authorization': DEMO_BEARER_AUTH},
         body: JSON.stringify({ status: newStatus, assignee: task?.assignee || '' }),
       });
       if (!res.ok) throw new Error();
@@ -587,7 +594,7 @@
   async function deleteTask(id) {
     if (!confirm('Delete this task?')) return;
     try {
-      const res = await fetch(`${API}/tasks/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${API}/tasks/${id}`, { method: 'DELETE', headers: { 'X-API-Key': DEMO_API_KEY } });
       if (res.status !== 204 && !res.ok) throw new Error();
       tasks = tasks.filter(t => t.id !== id);
       renderBoard();

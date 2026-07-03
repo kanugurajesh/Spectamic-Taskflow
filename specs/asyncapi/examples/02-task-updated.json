@@ -10,7 +10,8 @@
         "path": "/tasks/2",
         "method": "PUT",
         "headers": {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "Authorization": "Bearer tok_charlie_admin_8a4f"
         },
         "body": {
           "status": "in-progress",

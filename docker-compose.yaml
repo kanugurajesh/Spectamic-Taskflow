@@ -92,6 +92,7 @@ services:
   test-task-api:
     container_name: taskflow-test-task-api
     image: specmatic/enterprise:latest
+    working_dir: /usr/src/app
     volumes:
       - ./:/usr/src/app
       - ./license.txt:/specmatic/specmatic-license.txt:ro
@@ -100,20 +101,27 @@ services:
     depends_on:
       task-service:
         condition: service_healthy
-    command: ["test", "./specs/openapi/task-api.yaml", "--testBaseURL=http://task-service:8080"]
+    # No spec file / --testBaseURL args: securitySchemes only take effect when Specmatic
+    # resolves the spec through systemUnderTest (see specmatic.yaml), not via ad hoc CLI args.
+    command: ["test"]
 
   test-user-api:
     container_name: taskflow-test-user-api
     image: specmatic/enterprise:latest
+    working_dir: /usr/src/app
     volumes:
       - ./:/usr/src/app
+      - ./specmatic-user.yaml:/usr/src/app/specmatic.yaml:ro
       - ./license.txt:/specmatic/specmatic-license.txt:ro
     environment:
       SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
     depends_on:
       user-service:
         condition: service_healthy
-    command: ["test", "./specs/openapi/user-api.yaml", "--testBaseURL=http://user-service:8081"]
+    # specmatic-user.yaml is bind-mounted over specmatic.yaml (same trick as test-async)
+    # since systemUnderTest.service only holds one service, and user-api needs its own
+    # baseUrl + securitySchemes distinct from the task-api config.
+    command: ["test"]
 
   # ─── Async Contract Tests (--profile async) ───────────────────────────────────
 

@@ -43,6 +43,7 @@ This gets worse with AI coding agents. When you ask an LLM to generate a service
 | REST contract testing (OpenAPI 3.0.1) | `specs/openapi/task-api.yaml`, `user-api.yaml` |
 | Async event contract testing (AsyncAPI 3.0.0) | `specs/asyncapi/task-events.yaml` |
 | Schema resiliency testing (`all` — positive + negative) | `specmatic.yaml` → `settings.test.schemaResiliencyTests` |
+| Multiple OpenAPI security schemes (Basic, Bearer, API key) + role-based authorization | `task-api.yaml`, `user-api.yaml` → `components.securitySchemes`, enforced in `services/*/main.py` |
 | Service virtualization (mock server) | `--profile mock` |
 | Governance: 100% coverage enforcement | `specmatic.yaml` |
 | Specmatic Studio (visual contract IDE) | `--profile studio` |
@@ -277,7 +278,8 @@ Open `http://localhost:9000` — you can browse, edit, and run tests against the
 ```
 specmatic-taskflow/
 ├── README.md                       ← you are here
-├── specmatic.yaml                  ← REST contract test config (100% coverage + schema resiliency)
+├── specmatic.yaml                  ← Task API contract test config (100% coverage + schema resiliency + securitySchemes)
+├── specmatic-user.yaml             ← User API contract test config (own baseUrl + securitySchemes)
 ├── specmatic-async.yaml            ← Async event contract test config
 ├── docker-compose.yaml             ← Full orchestration
 ├── create-kafka-topics.sh          ← Kafka topic bootstrap
@@ -336,6 +338,66 @@ specmatic-taskflow/
 
 ---
 
+## Security Schemes
+
+Following the pattern from Specmatic's [`api-security-schemes`](../api-security-schemes) lab, both services protect different operations with different OpenAPI security schemes, and both authentication *and* role-based authorization are enforced in the Flask services — not just declared in the spec.
+
+**Task API** (`specs/openapi/task-api.yaml`) varies the scheme by HTTP method:
+
+| Operation | Scheme | Authorization rule |
+|---|---|---|
+| `GET /tasks`, `GET /tasks/{taskId}` | HTTP Basic | Any valid account may read |
+| `POST /tasks`, `PUT /tasks/{taskId}` | Bearer token | Role must be `developer`, `manager`, or `admin` (not `qa`) |
+| `DELETE /tasks/{taskId}` | API key (`X-API-Key`) | Role must be `admin` |
+
+**User API** (`specs/openapi/user-api.yaml`) uses one scheme for all operations, with an elevated-role check on the write path:
+
+| Operation | Scheme | Authorization rule |
+|---|---|---|
+| `GET /users`, `GET /users/{userId}` | API key (`X-API-Key`) | Any valid account may read |
+| `POST /users` | API key (`X-API-Key`) | Role must be `admin` or `manager` |
+
+Demo accounts (shared, hardcoded identity store in both services — see `IDENTITIES` / `API_KEYS` in `services/*/main.py`):
+
+| Username | Role | Basic password | Bearer token | API key |
+|---|---|---|---|---|
+| alice | developer | `password123` | `tok_alice_dev_9f1c` | `key_alice_dev_1122` |
+| bob | qa | `password234` | `tok_bob_qa_2e7a` | `key_bob_qa_3344` |
+| diana | manager | `password345` | `tok_diana_mgr_5b3d` | `key_diana_mgr_5566` |
+| charlie | admin | `password456` | `tok_charlie_admin_8a4f` | `key_charlie_admin_7788` |
+
+Try it against the running services:
+
+```bash
+# 401 — no credentials
+curl -i http://localhost:8080/tasks
+
+# 200 — any valid account can read
+curl -u alice:password123 http://localhost:8080/tasks
+
+# 403 — qa is authenticated but not allowed to create tasks
+curl -i -X POST http://localhost:8080/tasks \
+  -H "Authorization: Bearer tok_bob_qa_2e7a" \
+  -H "Content-Type: application/json" -d '{"title":"x","priority":"low"}'
+
+# 201 — developer role is allowed
+curl -X POST http://localhost:8080/tasks \
+  -H "Authorization: Bearer tok_alice_dev_9f1c" \
+  -H "Content-Type: application/json" -d '{"title":"x","priority":"low"}'
+
+# 403 — developer key, but DELETE requires admin
+curl -i -X DELETE http://localhost:8080/tasks/3 -H "X-API-Key: key_alice_dev_1122"
+
+# 204 — admin key deletes successfully
+curl -i -X DELETE http://localhost:8080/tasks/3 -H "X-API-Key: key_charlie_admin_7788"
+```
+
+**How Specmatic tests this:** `specmatic.yaml` (Task API) and `specmatic-user.yaml` (User API) each configure a single working `charlie`/admin credential per scheme under `runOptions.openapi.specs[].spec.securitySchemes`, keyed to the spec via a matching `id` (`taskApiSpec` / `userApiSpec`) on both the `systemUnderTest.service.definitions` entry and the `runOptions` override — so the existing example-based and schema-resiliency test scenarios keep passing against an authenticated backend. This validates *authentication* — Specmatic attaches the configured credential to every generated request for a secured operation, so a wrong or missing value there causes every scenario against that operation to fail with `401`, exactly like the reference lab demonstrates. Verified live: `docker compose run test-task-api` → 135/135 passing at 100% coverage, `test-user-api` → 49/49 at 100%, `test-async` → 2/2 (its `before`-hooks now carry the admin bearer token too).
+
+OpenAPI's `security` keyword only models authentication (who you are), not custom authorization rules (what your role permits) — a single contract-test run uses one configured credential per scheme, so it can't simultaneously assert "admin succeeds, qa gets 403" within the same run. The role-based authorization above is therefore real, enforced application logic (see the curl walkthrough), verified directly rather than through the contract-test run. The `docker-compose.yaml` frontend and async `before`-hooks are wired with the admin credentials so the rest of the stack keeps working end-to-end.
+
+---
+
 ## The AI-Native Angle: Contracts as Guardrails for Coding Agents
 
 This is the core insight of the project.
@@ -391,6 +453,9 @@ Schema resiliency generates more tests, which means more mutations. A DELETE tes
 **7. AI coding agents need executable contracts more than humans do.**
 Humans can read documentation and ask questions. AI agents need machine-readable, executable constraints. Specmatic contracts are exactly that.
 
+**8. Authentication and authorization are different testing problems.**
+OpenAPI `security` schemes model authentication — Specmatic can attach a configured credential to every request and prove the service rejects wrong or missing ones. They don't model per-role authorization: a single contract-test run uses one credential per scheme, so it can't assert "admin succeeds, qa gets 403" in the same run. That check has to live in the application (and be verified directly, e.g. via curl) rather than in the contract test.
+
 ---
 
 ## Challenges I Faced
@@ -433,6 +498,14 @@ The fix was to assign each destructive or mutating operation its own dedicated s
 - Task 3 → `DELETE /tasks/{taskId}` → 204 (disposable)
 
 And setting `_next_id = 100` prevents the 6 POST schema resiliency tests from creating tasks with IDs 2 and 3, which would overwrite the seed data.
+
+### 7. `securitySchemes` only take effect through `systemUnderTest`, not ad hoc CLI args
+
+The original `test-task-api`/`test-user-api` services ran `specmatic test <spec-file> --testBaseURL=...` — a positional-file invocation that tests a spec directly, bypassing `systemUnderTest.service` entirely (confirmed by the fact that, before adding security, both services already ran successfully against a `specmatic.yaml` whose `systemUnderTest` only ever declared `task-api.yaml`, never `user-api.yaml`). Top-level `specmatic:` settings (`governance`, `settings.test.schemaResiliencyTests`, `license`) apply either way, but `runOptions.openapi.specs[].spec.securitySchemes` is nested under `systemUnderTest.service.runOptions` and is only consulted when Specmatic resolves the spec through that block. Fixed by switching both docker-compose services to the bare `specmatic test` form, relying on `systemUnderTest.service.definitions` for which spec and `runOptions.openapi.baseUrl` for the target. Since `systemUnderTest.service` is singular, the User API also needed its own `specmatic-user.yaml` — bind-mounted over `/usr/src/app/specmatic.yaml` for that one container, the same trick already used for `specmatic-async.yaml` — rather than a second entry in the shared config.
+
+### 8. `securitySchemes` need an explicit `id` to bind to a spec — and declaring `401`/`403` without examples breaks 100% coverage
+
+Two more layers surfaced only once I actually ran the suite in Docker (schema validation against `specmatic-schema.json` caught structural mistakes but not these). First: `runOptions.openapi.specs[]` didn't apply at all until the spec's `definitions.specs` entry and the `runOptions` override both carried a matching `spec.id` (`taskApiSpec` / `userApiSpec`) — without it, Specmatic fell back to auto-generated (random) credentials, and every positive scenario failed with `401` while every negative "expect some 4xx" scenario passed by accident, masking the real problem. Second, after fixing that: coverage dropped to 58% even with 135/135 scenarios passing, because the coverage report treats every response code declared in an operation's `responses:` map as a separately-tracked, gradable unit — the `401`/`403` responses I'd added (with no example that could actually trigger them) showed up as "not tested" and dragged the score down. The fix was to drop those bare response declarations from both specs entirely; `security:` alone is enough to make Specmatic enforce and test authentication, and the 401/403 behavior is still real, it's just verified directly (see the curl walkthrough above) instead of declared in the contract.
 
 ---
 

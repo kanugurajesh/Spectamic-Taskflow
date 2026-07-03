@@ -8,6 +8,8 @@ paths:
   /users:
     get:
       summary: List all users
+      security:
+        - apiKeyAuth: []
       responses:
         '200':
           description: List of users
@@ -31,6 +33,8 @@ paths:
 
     post:
       summary: Create a new user
+      security:
+        - apiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -78,6 +82,8 @@ paths:
   /users/{userId}:
     get:
       summary: Get a user by ID
+      security:
+        - apiKeyAuth: []
       parameters:
         - name: userId
           in: path
@@ -163,3 +169,10 @@ components:
           type: string
         message:
           type: string
+
+  securitySchemes:
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key authentication — required for all user endpoints. Creating a user additionally requires the admin or manager role.
