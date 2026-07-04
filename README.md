@@ -393,9 +393,38 @@ curl -i -X DELETE http://localhost:8080/tasks/3 -H "X-API-Key: key_alice_dev_112
 curl -i -X DELETE http://localhost:8080/tasks/3 -H "X-API-Key: key_charlie_admin_7788"
 ```
 
-**How Specmatic tests this:** `specmatic.yaml` (Task API) and `specmatic-user.yaml` (User API) each configure a single working `charlie`/admin credential per scheme under `runOptions.openapi.specs[].spec.securitySchemes`, keyed to the spec via a matching `id` (`taskApiSpec` / `userApiSpec`) on both the `systemUnderTest.service.definitions` entry and the `runOptions` override — so the existing example-based and schema-resiliency test scenarios keep passing against an authenticated backend. This validates *authentication* — Specmatic attaches the configured credential to every generated request for a secured operation, so a wrong or missing value there causes every scenario against that operation to fail with `401`, exactly like the reference lab demonstrates. Verified live: `docker compose run test-task-api` → 135/135 REST tests passing at 100% coverage plus 2/2 async Kafka event tests in the same run, `test-user-api` → 49/49 at 100% (the async `before`-hooks now carry the admin bearer token too).
+**How Specmatic tests this:** `specmatic.yaml` (Task API) and `specmatic-user.yaml` (User API) each configure a single working `charlie`/admin credential per scheme under `runOptions.openapi.specs[].spec.securitySchemes`, keyed to the spec via a matching `id` (`taskApiSpec` / `userApiSpec`) on both the `systemUnderTest.service.definitions` entry and the `runOptions` override — so the existing example-based and schema-resiliency test scenarios keep passing against an authenticated backend. This validates *authentication* — Specmatic attaches the configured credential to every generated request for a secured operation, so a wrong or missing value there causes every scenario against that operation to fail with `401`, exactly like the reference lab demonstrates. Verified live: `docker compose run test-task-api` → 135/135 REST tests passing (58% coverage — see below for why) plus 2/2 async Kafka event tests in the same run, `test-user-api` → 49/49 (56% coverage).
 
-OpenAPI's `security` keyword only models authentication (who you are), not custom authorization rules (what your role permits) — a single contract-test run uses one configured credential per scheme, so it can't simultaneously assert "admin succeeds, qa gets 403" within the same run. The role-based authorization above is therefore real, enforced application logic (see the curl walkthrough), verified directly rather than through the contract-test run. The `docker-compose.yaml` frontend and async `before`-hooks are wired with the admin credentials so the rest of the stack keeps working end-to-end.
+OpenAPI's `security` keyword only models authentication (who you are), not custom authorization rules (what your role permits) — a single contract-test run uses one configured credential per scheme, so it can't simultaneously assert "admin succeeds, qa gets 403" within the same run. The role-based authorization above is therefore real, enforced application logic (see the curl walkthrough). The `docker-compose.yaml` frontend and async `before`-hooks are wired with the admin credentials so the rest of the stack keeps working end-to-end.
+
+**Why coverage is 58%/56%, not 100%:** both specs now declare `401`/`403` on every secured operation (schema-only, no examples — see each operation's `responses:` map). This is a deliberate documentation choice: since a contract-test run only ever exercises one configured credential per scheme, Specmatic can never actually generate a request that triggers those codes, so they permanently show up as "not tested" in the coverage report. `minCoveragePercentage` in both `specmatic.yaml` (58) and `specmatic-user.yaml` (56) is set to the actual measured ceiling with 401/403 declared, so CI stays meaningful instead of demanding an unreachable 100%.
+
+### Intentional Failure
+
+Following the same technique as the [`api-security-schemes`](../api-security-schemes) lab: override the *configured* credential and re-run the exact same suite to prove 401/403 are real, enforced behavior — not just declared response shapes.
+
+`TASK_BEARER_TOKEN` defaults to `charlie`'s admin token (`tok_charlie_admin_8a4f`) in `specmatic.yaml`. Override it at run time with `-e` (a plain `VAR=value` prefix on `docker compose run` does **not** reach the container unless the compose file already lists that variable — `-e` forwards it explicitly):
+
+```bash
+# Baseline — the configured admin credential works
+docker compose run --rm --no-deps test-task-api
+# Tests run: 135, Successes: 135, Failures: 0 — 58% coverage
+
+# 401 — override with a garbage token
+docker compose run --rm --no-deps -e TASK_BEARER_TOKEN=invalid_garbage_token test-task-api
+# Tests run: 135, Successes: 115, Failures: 20 — 47% coverage
+# every failure: "Specification expected status 201/200 but response contained status 401"
+
+# 403 — override with bob's valid qa token
+docker compose run --rm --no-deps -e TASK_BEARER_TOKEN=tok_bob_qa_2e7a test-task-api
+# Tests run: 135, Successes: 115, Failures: 20 — 47% coverage
+# every failure: "...but response contained status 403" (bob authenticates fine, qa role isn't permitted)
+
+# Back to the working default — full suite passes again
+docker compose run --rm --no-deps test-task-api
+```
+
+Only 20 of the 135 scenarios actually fail in each override, not all ~117 bearer-secured ones — because `401` is now a *documented* response, Specmatic accepts it as a valid outcome for the schema-resiliency scenarios that only assert "some 4xx came back" (they don't care which one), and reclassifies those as passing under the 401/403 bucket instead of failing. Only the scenarios that require one *specific* status — the positive-path 201/200 examples, plus a couple of the negative 400 examples that happen to collide — actually fail, since 401/403 aren't what they declared. `GET /tasks`/`GET /tasks/{taskId}` (basicAuth) and `DELETE /tasks/{taskId}` (apiKeyAuth) are untouched by either override — only the bearer-secured operations move. Between overrides, `task-service` needs a restart (`docker compose restart task-service`) to reset its in-memory seed data, since a failed run can still leave partial state (e.g. a task created before the credential check on a later step).
 
 ---
 
@@ -508,7 +537,9 @@ The original `test-task-api`/`test-user-api` services ran `specmatic test <spec-
 
 ### 8. `securitySchemes` need an explicit `id` to bind to a spec — and declaring `401`/`403` without examples breaks 100% coverage
 
-Two more layers surfaced only once I actually ran the suite in Docker (schema validation against `specmatic-schema.json` caught structural mistakes but not these). First: `runOptions.openapi.specs[]` didn't apply at all until the spec's `definitions.specs` entry and the `runOptions` override both carried a matching `spec.id` (`taskApiSpec` / `userApiSpec`) — without it, Specmatic fell back to auto-generated (random) credentials, and every positive scenario failed with `401` while every negative "expect some 4xx" scenario passed by accident, masking the real problem. Second, after fixing that: coverage dropped to 58% even with 135/135 scenarios passing, because the coverage report treats every response code declared in an operation's `responses:` map as a separately-tracked, gradable unit — the `401`/`403` responses I'd added (with no example that could actually trigger them) showed up as "not tested" and dragged the score down. The fix was to drop those bare response declarations from both specs entirely; `security:` alone is enough to make Specmatic enforce and test authentication, and the 401/403 behavior is still real, it's just verified directly (see the curl walkthrough above) instead of declared in the contract.
+Two more layers surfaced only once I actually ran the suite in Docker (schema validation against `specmatic-schema.json` caught structural mistakes but not these). First: `runOptions.openapi.specs[]` didn't apply at all until the spec's `definitions.specs` entry and the `runOptions` override both carried a matching `spec.id` (`taskApiSpec` / `userApiSpec`) — without it, Specmatic fell back to auto-generated (random) credentials, and every positive scenario failed with `401` while every negative "expect some 4xx" scenario passed by accident, masking the real problem. Second, after fixing that: declaring `401`/`403` on every secured operation (schema-only, no examples — nothing can generate a request that actually triggers them, since a run only ever carries one configured credential per scheme) dropped measured coverage to 58% (task-api) / 56% (user-api) even with every test passing, because the coverage report treats every response code declared in an operation's `responses:` map as its own gradable unit, and these show up permanently as "not tested."
+
+I initially dropped those bare response declarations entirely to keep coverage at 100% — `security:` alone is enough to make Specmatic enforce and test authentication, and the 401/403 behavior was still real, just verified directly via curl instead of declared in the contract. Later reinstated them anyway (documentation value: a reader of the spec should see that these operations require auth without having to go read the Flask code), and lowered `minCoveragePercentage` in `specmatic.yaml`/`specmatic-user.yaml` to the actual measured ceiling (58/56) instead of chasing an unreachable 100. One more thing this surfaced: with 401 undeclared, an invalid-credential override run failed *all* ~117 bearer-secured scenarios (positive and negative alike, since 401 wasn't a documented response at all). With 401 declared, the same override only fails 20 — Specmatic now accepts the 401 as a legitimate documented outcome for the schema-resiliency scenarios that just assert "some 4xx came back," and only the scenarios demanding one specific code (the 201/200 positive-path examples) actually fail. See "Intentional Failure" under Security Schemes for the full walkthrough.
 
 ---
 
