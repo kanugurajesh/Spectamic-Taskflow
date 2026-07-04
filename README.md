@@ -73,9 +73,9 @@ This gets worse with AI coding agents. When you ask an LLM to generate a service
 │   └──────────────────┘                                         │
 │                                                                 │
 │   Specmatic (contract enforcement layer):                       │
-│   ├── test-task-api   → OpenAPI contract test vs Task Service  │
+│   ├── test-task-api   → OpenAPI + AsyncAPI tests vs Task       │
+│   │                      Service and its Kafka events, one run │
 │   ├── test-user-api   → OpenAPI contract test vs User Service  │
-│   ├── test-async      → AsyncAPI contract test vs Kafka        │
 │   ├── mock-task-api   → Stub server :9100 for consumers        │
 │   └── studio          → Browser contract IDE :9000             │
 └─────────────────────────────────────────────────────────────────┘
@@ -173,7 +173,7 @@ specmatic-taskflow/
 docker compose up
 ```
 
-Starts both services, the Kanban frontend, and runs OpenAPI contract tests. Open `http://localhost:3000` to see the board.
+Starts both services, the Kanban frontend, and runs the OpenAPI *and* async Kafka contract tests — one command covers the full contract suite. Open `http://localhost:3000` to see the board.
 
 ### 1b. Open the frontend against the mock server
 
@@ -254,12 +254,14 @@ curl -X POST http://localhost:9100/tasks \
 The Task Service publishes events to Kafka when tasks are created or updated. Specmatic validates those messages against `specs/asyncapi/task-events.yaml`.
 
 ```bash
-docker compose --profile async up test-async
+docker compose up test-task-api --build
 ```
+
+`specmatic.yaml` declares both the task-api (OpenAPI) and task-events (AsyncAPI) specs under one `systemUnderTest.service` — one `specmatic test` invocation runs the REST scenarios first, then the Kafka event scenarios, in the same `test-task-api` container. There's no separate async container or config file to run.
 
 Specmatic subscribes to the `task-created` and `task-updated` Kafka topics, then runs the `before` hooks defined in `specs/asyncapi/examples/` — each one issues a real HTTP call against the Task Service (e.g. `POST /tasks`) — and validates that the resulting published messages conform to the AsyncAPI schema.
 
-This also runs automatically in CI (`.github/workflows/ci.yml`), right after Kafka and the Task Service come up and before the Task API REST contract tests run, so it always exercises the service's known seed data (tasks 1–3) rather than state left over from another test run.
+This also runs automatically in CI (`.github/workflows/ci.yml`) as part of the same "Task API + async contract tests" step, right after Kafka and the Task Service come up.
 
 ### Specmatic Studio
 
@@ -278,9 +280,8 @@ Open `http://localhost:9000` — you can browse, edit, and run tests against the
 ```
 specmatic-taskflow/
 ├── README.md                       ← you are here
-├── specmatic.yaml                  ← Task API contract test config (100% coverage + schema resiliency + securitySchemes)
+├── specmatic.yaml                  ← Task API (OpenAPI) + task-events (AsyncAPI) config, one systemUnderTest.service
 ├── specmatic-user.yaml             ← User API contract test config (own baseUrl + securitySchemes)
-├── specmatic-async.yaml            ← Async event contract test config
 ├── docker-compose.yaml             ← Full orchestration
 ├── create-kafka-topics.sh          ← Kafka topic bootstrap
 │
@@ -392,7 +393,7 @@ curl -i -X DELETE http://localhost:8080/tasks/3 -H "X-API-Key: key_alice_dev_112
 curl -i -X DELETE http://localhost:8080/tasks/3 -H "X-API-Key: key_charlie_admin_7788"
 ```
 
-**How Specmatic tests this:** `specmatic.yaml` (Task API) and `specmatic-user.yaml` (User API) each configure a single working `charlie`/admin credential per scheme under `runOptions.openapi.specs[].spec.securitySchemes`, keyed to the spec via a matching `id` (`taskApiSpec` / `userApiSpec`) on both the `systemUnderTest.service.definitions` entry and the `runOptions` override — so the existing example-based and schema-resiliency test scenarios keep passing against an authenticated backend. This validates *authentication* — Specmatic attaches the configured credential to every generated request for a secured operation, so a wrong or missing value there causes every scenario against that operation to fail with `401`, exactly like the reference lab demonstrates. Verified live: `docker compose run test-task-api` → 135/135 passing at 100% coverage, `test-user-api` → 49/49 at 100%, `test-async` → 2/2 (its `before`-hooks now carry the admin bearer token too).
+**How Specmatic tests this:** `specmatic.yaml` (Task API) and `specmatic-user.yaml` (User API) each configure a single working `charlie`/admin credential per scheme under `runOptions.openapi.specs[].spec.securitySchemes`, keyed to the spec via a matching `id` (`taskApiSpec` / `userApiSpec`) on both the `systemUnderTest.service.definitions` entry and the `runOptions` override — so the existing example-based and schema-resiliency test scenarios keep passing against an authenticated backend. This validates *authentication* — Specmatic attaches the configured credential to every generated request for a secured operation, so a wrong or missing value there causes every scenario against that operation to fail with `401`, exactly like the reference lab demonstrates. Verified live: `docker compose run test-task-api` → 135/135 REST tests passing at 100% coverage plus 2/2 async Kafka event tests in the same run, `test-user-api` → 49/49 at 100% (the async `before`-hooks now carry the admin bearer token too).
 
 OpenAPI's `security` keyword only models authentication (who you are), not custom authorization rules (what your role permits) — a single contract-test run uses one configured credential per scheme, so it can't simultaneously assert "admin succeeds, qa gets 403" within the same run. The role-based authorization above is therefore real, enforced application logic (see the curl walkthrough), verified directly rather than through the contract-test run. The `docker-compose.yaml` frontend and async `before`-hooks are wired with the admin credentials so the rest of the stack keeps working end-to-end.
 
@@ -478,11 +479,13 @@ The task service tries to connect to Kafka on the first publish. If Kafka isn't 
 
 ### 4a. AsyncAPI test mode doesn't take a `--config` flag
 
-`specmatic test --config=specmatic-async.yaml` silently falls back to the default `specmatic.yaml` for AsyncAPI tests — the `--config` flag only exists for the OpenAPI test path. Since `specs-task-flow`'s repo root is mounted wholesale into every Specmatic container, the real `specmatic.yaml` (the REST config) was always shadowing the async one. The fix: bind-mount `specmatic-async.yaml` over `/usr/src/app/specmatic.yaml` for the `test-async` service only, so that container's default config lookup resolves to the async config without touching the REST services' config.
+`specmatic test --config=specmatic-async.yaml` silently falls back to the default `specmatic.yaml` for AsyncAPI tests — the `--config` flag only exists for the OpenAPI test path. Since `specs-task-flow`'s repo root is mounted wholesale into every Specmatic container, the real `specmatic.yaml` (the REST config) was always shadowing the async one. The fix at the time: bind-mount a separate `specmatic-async.yaml` over `/usr/src/app/specmatic.yaml` for the `test-async` service only, so that container's default config lookup resolved to the async config without touching the REST config.
+
+**Update:** since the task-api (OpenAPI) and task-events (AsyncAPI) specs describe the same system under test (task-service), they were later merged into one `specmatic.yaml` with both an `openapi:` and `asyncapi:` block under a single `systemUnderTest.service` — this sidesteps the `--config` limitation entirely (there's only ever one default config to shadow), and `test-async`/`specmatic-async.yaml` no longer exist. A single `specmatic test` run now executes the OpenAPI scenarios first, then the AsyncAPI scenarios, in one invocation.
 
 ### 4b. AsyncAPI message examples need an external fixture + a `before` hook to actually drive anything
 
-Inline `examples` on an AsyncAPI Message object are useful for documentation, but a "send" operation needs something to actually trigger the publish — Specmatic doesn't call your REST API on its own. The working pattern is external JSON example files (`specs/asyncapi/examples/`, referenced via `data.examples.directories` in `specmatic-async.yaml`) with a `before` array that issues the real HTTP request (e.g. `POST /tasks`) before Specmatic listens for the resulting Kafka message.
+Inline `examples` on an AsyncAPI Message object are useful for documentation, but a "send" operation needs something to actually trigger the publish — Specmatic doesn't call your REST API on its own. The working pattern is external JSON example files (`specs/asyncapi/examples/`, referenced via `data.examples.directories` in `specmatic.yaml`) with a `before` array that issues the real HTTP request (e.g. `POST /tasks`) before Specmatic listens for the resulting Kafka message.
 
 ### 5. Specmatic Enterprise requires `/actuator/health` to run tests
 
@@ -501,7 +504,7 @@ And setting `_next_id = 100` prevents the 6 POST schema resiliency tests from cr
 
 ### 7. `securitySchemes` only take effect through `systemUnderTest`, not ad hoc CLI args
 
-The original `test-task-api`/`test-user-api` services ran `specmatic test <spec-file> --testBaseURL=...` — a positional-file invocation that tests a spec directly, bypassing `systemUnderTest.service` entirely (confirmed by the fact that, before adding security, both services already ran successfully against a `specmatic.yaml` whose `systemUnderTest` only ever declared `task-api.yaml`, never `user-api.yaml`). Top-level `specmatic:` settings (`governance`, `settings.test.schemaResiliencyTests`, `license`) apply either way, but `runOptions.openapi.specs[].spec.securitySchemes` is nested under `systemUnderTest.service.runOptions` and is only consulted when Specmatic resolves the spec through that block. Fixed by switching both docker-compose services to the bare `specmatic test` form, relying on `systemUnderTest.service.definitions` for which spec and `runOptions.openapi.baseUrl` for the target. Since `systemUnderTest.service` is singular, the User API also needed its own `specmatic-user.yaml` — bind-mounted over `/usr/src/app/specmatic.yaml` for that one container, the same trick already used for `specmatic-async.yaml` — rather than a second entry in the shared config.
+The original `test-task-api`/`test-user-api` services ran `specmatic test <spec-file> --testBaseURL=...` — a positional-file invocation that tests a spec directly, bypassing `systemUnderTest.service` entirely (confirmed by the fact that, before adding security, both services already ran successfully against a `specmatic.yaml` whose `systemUnderTest` only ever declared `task-api.yaml`, never `user-api.yaml`). Top-level `specmatic:` settings (`governance`, `settings.test.schemaResiliencyTests`, `license`) apply either way, but `runOptions.openapi.specs[].spec.securitySchemes` is nested under `systemUnderTest.service.runOptions` and is only consulted when Specmatic resolves the spec through that block. Fixed by switching both docker-compose services to the bare `specmatic test` form, relying on `systemUnderTest.service.definitions` for which spec and `runOptions.openapi.baseUrl` for the target. Since `systemUnderTest.service` is singular, the User API also needed its own `specmatic-user.yaml` — bind-mounted over `/usr/src/app/specmatic.yaml` for that one container — rather than a second entry in the shared config. (The equivalent async config was later folded directly into `specmatic.yaml` instead of staying a separate bind-mounted file — see Challenge 4a — since the task-api and task-events specs describe the same service.)
 
 ### 8. `securitySchemes` need an explicit `id` to bind to a spec — and declaring `401`/`403` without examples breaks 100% coverage
 
