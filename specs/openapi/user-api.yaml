@@ -30,6 +30,12 @@ paths:
                       name: "Bob Smith"
                       email: "bob@example.com"
                       role: "qa"
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     post:
       summary: Create a new user
@@ -78,6 +84,18 @@ paths:
                   value:
                     error: "Validation failed"
                     message: "name is required"
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Valid credentials, but role not permitted to create users
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /users/{userId}:
     get:
@@ -120,6 +138,12 @@ paths:
                   value:
                     error: "Not Found"
                     message: "User with id unknown not found"
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
 components:
   schemas:

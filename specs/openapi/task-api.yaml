@@ -52,6 +52,12 @@ paths:
                   value:
                     error: "Validation failed"
                     message: "status must be one of ['completed', 'in-progress', 'pending']"
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     post:
       summary: Create a new task
@@ -102,6 +108,18 @@ paths:
                   value:
                     error: "Validation failed"
                     message: "title is required"
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Valid credentials, but role not permitted to create tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /tasks/{taskId}:
     get:
@@ -147,6 +165,12 @@ paths:
                   value:
                     error: "Not Found"
                     message: "Task with id 999 not found"
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     put:
       summary: Update a task
@@ -221,6 +245,18 @@ paths:
                   value:
                     error: "Validation failed"
                     message: "priority must be one of ['high', 'low', 'medium']"
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Valid credentials, but role not permitted to update tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
     delete:
       summary: Delete a task
@@ -251,6 +287,18 @@ paths:
                   value:
                     error: "Not Found"
                     message: "Task with id 999 not found"
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Valid credentials, but role not permitted to delete tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
 components:
   schemas:
