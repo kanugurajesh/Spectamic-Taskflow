@@ -10,9 +10,12 @@ services:
       - "8080:8080"
     environment:
       KAFKA_BOOTSTRAP_SERVER: kafka:9092
+      KEYCLOAK_ISSUER: http://keycloak:8080/realms/taskflow
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; req=urllib.request.Request('http://localhost:8080/health', method='HEAD'); urllib.request.urlopen(req)"]
       interval: 2s
@@ -32,6 +35,28 @@ services:
       timeout: 2s
       retries: 30
       start_period: 5s
+
+  # ─── Keycloak (OAuth2 for POST/PUT /tasks) ──────────────────────────────────
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: taskflow-keycloak
+    command: ["start-dev", "--import-realm", "--health-enabled=true"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    ports:
+      - "8083:8080"
+    healthcheck:
+      # No curl/wget in this image — use bash's built-in /dev/tcp to hit the management
+      # health endpoint (Keycloak 26 serves /health/ready on port 9000, not 8080).
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+      start_period: 15s
 
   # ─── Kafka ───────────────────────────────────────────────────────────────────
 
@@ -95,20 +120,58 @@ services:
   test-task-api:
     container_name: taskflow-test-task-api
     image: specmatic/enterprise:latest
-    working_dir: /usr/src/app
+    working_dir: /tmp/app
     volumes:
-      - ./:/usr/src/app
+      - ./:/usr/src/app:ro
       - ./license.txt:/specmatic/specmatic-license.txt:ro
     environment:
       SPECMATIC_LICENSE_PATH: /specmatic/specmatic-license.txt
+      KEYCLOAK_BASE_URL: http://keycloak:8080
+      # Override these with `docker compose run -e ...` to demonstrate 401 (bad password) or
+      # 403 (a real, valid-but-wrong-role account in the DEV_* slot) — see README "Intentional
+      # Failure". Defaults are alice (developer, for the positive-path examples).
+      KEYCLOAK_DEV_USERNAME: alice
+      KEYCLOAK_DEV_PASSWORD: password123
+      KEYCLOAK_QA_USERNAME: bob
+      KEYCLOAK_QA_PASSWORD: password234
     depends_on:
       kafka-init:
         condition: service_completed_successfully
       task-service:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
     # No spec file / --testBaseURL args: securitySchemes only take effect when Specmatic
     # resolves the spec through systemUnderTest (see specmatic.yaml), not via ad hoc CLI args.
-    command: ["test"]
+    #
+    # POST/PUT /tasks need real Keycloak-issued JWTs (developer-role for positive-path examples,
+    # qa-role for the 403 examples) — Specmatic has no mechanism to chain a token captured in a
+    # `before` step into a later request within the same example, so we fetch fresh tokens here
+    # and substitute them into a writable copy of the repo (the bind mount is read-only) before
+    # running the suite. TASK_OAUTH_TOKEN feeds the one global securityScheme credential used by
+    # examples with no explicit Authorization header; __QA_TOKEN_PLACEHOLDER__/__DEV_TOKEN_PLACEHOLDER__
+    # are substituted directly into the specific examples/before-hooks that need a fixed role.
+    entrypoint: ["/bin/bash"]
+    command:
+      - -ec
+      - |
+        cp -r /usr/src/app/. /tmp/app/
+        cd /tmp/app
+
+        DEV_TOKEN=$$(curl -sf -X POST "$$KEYCLOAK_BASE_URL/realms/taskflow/protocol/openid-connect/token" \
+          -d "grant_type=password&client_id=task-api&username=$$KEYCLOAK_DEV_USERNAME&password=$$KEYCLOAK_DEV_PASSWORD" | jq -r .access_token)
+        QA_TOKEN=$$(curl -sf -X POST "$$KEYCLOAK_BASE_URL/realms/taskflow/protocol/openid-connect/token" \
+          -d "grant_type=password&client_id=task-api&username=$$KEYCLOAK_QA_USERNAME&password=$$KEYCLOAK_QA_PASSWORD" | jq -r .access_token)
+
+        sed -i "s/__QA_TOKEN_PLACEHOLDER__/$$QA_TOKEN/g" \
+          specs/openapi/examples/task-api/post-tasks-403.json \
+          specs/openapi/examples/task-api/put-task-403.json
+        sed -i "s/__DEV_TOKEN_PLACEHOLDER__/$$DEV_TOKEN/g" \
+          specs/asyncapi/examples/01-task-created.json \
+          specs/asyncapi/examples/02-task-updated.json
+
+        export TASK_OAUTH_TOKEN="$$DEV_TOKEN"
+        specmatic test
 
   test-user-api:
     container_name: taskflow-test-user-api

@@ -636,9 +636,12 @@ components:
     basicAuth:
       type: http
       scheme: basic          # GET — any valid account may read
-    bearerAuth:
-      type: http
-      scheme: bearer          # POST/PUT — developer, manager, or admin role
+    oAuth2AuthCode:
+      type: oauth2            # POST/PUT — developer, manager, or admin role
+      flows:
+        authorizationCode:
+          authorizationUrl: http://localhost:8083/realms/taskflow/protocol/openid-connect/auth
+          tokenUrl: http://localhost:8083/realms/taskflow/protocol/openid-connect/token
     apiKeyAuth:
       type: apiKey
       in: header
@@ -647,7 +650,7 @@ components:
 
 `user-api.yaml` uses one scheme (`apiKeyAuth`) everywhere, with an elevated-role check bolted onto `POST /users` only.
 
-Both Flask services enforce this with small decorator functions (`require_basic_auth`, `require_bearer_auth(allowed_roles)`, `require_api_key(allowed_roles)`) backed by a hardcoded demo identity table — four accounts (`alice`/developer, `bob`/qa, `diana`/manager, `charlie`/admin) with a password, a bearer token, and an API key each. A decorator returns `401` for a missing/invalid credential and `403` for a valid credential whose role isn't in the allowlist:
+The POST/PUT scheme started life as a static `bearerAuth` (`type: http, scheme: bearer`) checked against a hardcoded token dictionary — no different in substance from the API key, just a different header name. Gotcha 3 below covers why and how it became a real Keycloak-backed `oAuth2AuthCode` scheme instead. Both Flask services enforce authorization with small decorator functions (`require_basic_auth`, `require_bearer_auth(allowed_roles)`, `require_api_key(allowed_roles)`) backed by a demo identity table — four accounts (`alice`/developer, `bob`/qa, `diana`/manager, `charlie`/admin). A decorator returns `401` for a missing/invalid credential and `403` for a valid credential whose role isn't in the allowlist; here's the current, JWT-validating version of the bearer decorator:
 
 ```python
 def require_bearer_auth(allowed_roles):
@@ -657,9 +660,19 @@ def require_bearer_auth(allowed_roles):
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
                 return _unauthorized("Bearer token required")
-            role = _BEARER_TOKENS.get(auth_header[len("Bearer "):].strip())
+            token = auth_header[len("Bearer "):].strip()
+            try:
+                signing_key = _jwks_client.get_signing_key_from_jwt(token)
+                claims = jwt.decode(
+                    token, signing_key.key, algorithms=["RS256"],
+                    options={"verify_aud": False, "verify_iss": False},
+                )
+            except Exception:
+                return _unauthorized("Invalid or expired token")
+            token_roles = set(claims.get("realm_access", {}).get("roles", []))
+            role = next((r for r in ("developer", "qa", "manager", "admin") if r in token_roles), None)
             if not role:
-                return _unauthorized("Invalid bearer token")
+                return _unauthorized("Token does not carry a recognized role")
             if role not in allowed_roles:
                 return _forbidden(f"role '{role}' is not permitted to perform this action")
             return f(*args, **kwargs)
@@ -700,31 +713,49 @@ That got every positive scenario back to `200`/`201`/`204` — but the run still
 
 That assumption turned out to be wrong, and a founder's review of this submission is what surfaced it: the reference [`api-security-schemes`](../api-security-schemes) lab's actual contract (pulled from `specmatic/labs-contracts` at test time, so not visible in this repo's checkout of that lab) has an `auth_examples/` directory full of dedicated external example files — `post-orders_application_json_401.json` hardcodes a bad bearer token directly in the request; `post-orders-create-forbidden.json` uses a `before` fixture to log into Keycloak as a real, valid, wrong-role user. Each example carries its **own** credential, completely independent of the one global credential configured for the positive-path scenarios — so each one executes for real, hits the server, and counts as tested coverage. The "only one credential per run" limitation was a limitation of how I'd wired the global `securitySchemes` override, not of Specmatic itself.
 
-I did the same thing here, minus the OAuth login step — our schemes are static Basic/Bearer/API-key credentials, so the bad or wrong-role value can just be hardcoded straight into the example instead of fetched via a `before` fixture. `specs/openapi/examples/task-api/` and `specs/openapi/examples/user-api/` now hold one external example file per 401/403 case (e.g. `post-tasks-403.json` sends bob's real `qa`-role bearer token and expects `403`), wired in via `data.examples.directories` — the same mechanism already used for the async Kafka `before`-hooks. One gotcha: for `basicAuth`/`apiKeyAuth` operations, simply omitting the auth header in an example doesn't produce `401` — Specmatic still auto-attaches the globally configured *valid* credential to fill the gap; the fix is to set the header to some other explicit (invalid) value, which takes precedence. With all 12 examples in place, both specs measure genuine **100% coverage with every test passing** — no lowered ceiling required. Both bugs (the missing `id` and the coverage cost) only showed up once I actually ran the containers — `jsonschema.validate()` against the config schema and `openapi-spec-validator` against the specs both passed the whole time, because the files were legal, just not correctly *wired* or *exercised*.
+I added the equivalent here — `specs/openapi/examples/task-api/` and `specs/openapi/examples/user-api/`, wired in via `data.examples.directories` — the same mechanism already used for the async Kafka `before`-hooks. For `basicAuth`/`apiKeyAuth` this was simple: one gotcha surfaced — simply omitting the auth header in an example doesn't produce `401`, Specmatic still auto-attaches the globally configured *valid* credential to fill the gap, so the fix is to set the header to some other explicit (invalid) value, which takes precedence. The `bearerAuth`/OAuth2 case needed a much bigger, separate fix — see Gotcha 3. With everything in place, both specs measure genuine **100% coverage with every test passing** — no lowered ceiling required. Both bugs (the missing `id` and the coverage cost) only showed up once I actually ran the containers — `jsonschema.validate()` against the config schema and `openapi-spec-validator` against the specs both passed the whole time, because the files were legal, just not correctly *wired* or *exercised*.
+
+### Gotcha 3: migrating to real Keycloak OAuth2 — three failed assumptions before the actual fix
+
+Testing 401/403 "for real" worked cleanly for the static schemes, but `bearerAuth` was itself just a static pre-shared string checked against a dictionary — not meaningfully different from the API key, and not actually testing OAuth2. Migrating it to a real Keycloak-backed `oAuth2AuthCode` scheme (a new `keycloak` service in `docker-compose.yaml`, a realm export at `keycloak/taskflow-realm.json`) surfaced a chain of problems, each only visible by running the stack:
+
+**No curl in the Keycloak image, and the health endpoint isn't on the port you'd guess.** `quay.io/keycloak/keycloak` ships no `curl`/`wget`. Keycloak 26 also serves `/health/ready` on the *management* port (9000), not the main port (8080) I first pointed the healthcheck at. Fixed with a `CMD-SHELL` healthcheck using bash's built-in `/dev/tcp` to speak raw HTTP directly — no external tool needed.
+
+**"Account is not fully set up" on login, and it's not about required actions.** Every imported user had `requiredActions: []` explicitly — confirmed via Keycloak's own admin REST API, not just the realm file. The real cause: Keycloak 26's declarative User Profile marks `firstName`/`lastName` required by default, and `VERIFY_PROFILE` gets computed dynamically at login for any user missing them, regardless of what's in `requiredActions`. Fixed by adding `firstName`/`lastName` to every user in the realm export.
+
+**The same token has a different `iss` claim depending on how you asked for it.** Keycloak derives the issuer from the request's own Host header, so a token fetched from the browser (`localhost:8083`) and one fetched from inside Docker (`keycloak:8080`) get different `iss` values for the same realm. Pinning it via `KC_HOSTNAME`/`KC_HOSTNAME_PORT` didn't produce the value I expected either. Since JWKS signature verification already proves a token came from this exact Keycloak instance's private key, I disabled issuer and audience verification in Flask (`verify_iss: False`, `verify_aud: False`) instead of chasing a fragile pin — a deliberate, documented simplification for a single-realm demo.
+
+**There's no way to forward a captured value into a later request within a Specmatic example — at least not in this version.** The natural design: a `before` fixture logs into Keycloak, captures `"(ACCESS_TOKEN:string)"`, the next request references `$(ACCESS_TOKEN)`. I tried the reference lab's exact pattern (no explicit header, relying on undocumented auto-binding) — checked byte-for-byte, their files never reference the captured variable anywhere — and it just fell back to the global credential. I then tried the documented capture/reference syntax explicitly: the literal string `$(ACCESS_TOKEN)` was sent verbatim, completely unsubstituted. Tested in both the `before`+`partial` REST format and the sequential `before` array the async hooks use — identical result both times, confirmed with real Docker output, not assumed.
+
+**The actual fix lives in the test container's entrypoint, not in the example files.** `test-task-api` in `docker-compose.yaml` now copies the (read-only-mounted) repo into a scratch directory, fetches real tokens for alice (developer) and bob (qa) straight from Keycloak, and `sed`-substitutes them into the two examples and two async hooks that need a *specific* role. Everything else that just needs *some* valid allowed-role credential has no explicit `Authorization` header at all and picks up the freshly-fetched developer token from the global config automatically — same mechanism as `basicAuth`/`apiKeyAuth`. One last `cp` gotcha: Docker auto-creates `working_dir` as an empty directory before the entrypoint runs, so `cp -r /src /tmp/app` copies `/src` as a *subdirectory* of the already-existing `/tmp/app` rather than populating it — `cp -r /src/. /tmp/app/` was the fix.
 
 ### What Specmatic tests here — authentication and authorization, both for real
 
-Running the suite with the securitySchemes correctly wired re-validates every existing example and schema-resiliency scenario against an authenticated backend, using a single admin-level credential (`charlie`) configured per scheme — verified live: `test-task-api` 143/143 at 100% coverage, `test-user-api` 53/53 at 100%, `test-async` 2/2. Get the token wrong and every scenario relying on that global credential fails `401` — the same signal the reference lab demonstrates.
+Running the suite with the securitySchemes correctly wired re-validates every existing example and schema-resiliency scenario against an authenticated backend — `basicAuth`/`apiKeyAuth` via a static admin (`charlie`) credential, `oAuth2AuthCode` via a real token fetched from Keycloak for alice (developer) at the start of every run — verified live: `test-task-api` 143/143 at 100% coverage, `test-user-api` 53/53 at 100%, `test-async` 2/2. Break the credential (wrong Keycloak password, or a valid-but-wrong-role account) and every scenario relying on that global credential fails — the same signal the reference lab demonstrates.
 
-Authorization is tested the same way, not just declared: the 12 dedicated external examples above assert `bob` (qa) gets `403` on `POST /tasks` while the positive-path examples assert `charlie`/`alice` (admin/developer) get `201` — in the *same* single contract-test run, because each example brings its own credential rather than relying on the one global value. OpenAPI's `security` keyword only models *authentication* (who you are) on its own; the per-role authorization rule ("qa can authenticate but can't create tasks") is real, enforced application logic in the Flask services, and I verified it twice — once as a counted Specmatic scenario, and once live via curl:
+Authorization is tested the same way, not just declared: the dedicated external examples assert `bob` (qa) gets `403` on `POST /tasks` while the positive-path examples assert `alice` (developer) gets `201` — in the *same* single contract-test run, because each example brings its own credential rather than relying on the one global value. OpenAPI's `security` keyword only models *authentication* (who you are) on its own; the per-role authorization rule ("qa can authenticate but can't create tasks") is real, enforced application logic in the Flask services, and I verified it twice — once as a counted Specmatic scenario, and once live via curl:
 
 ```bash
+QA_TOKEN=$(curl -s -X POST http://localhost:8083/realms/taskflow/protocol/openid-connect/token \
+  -d "grant_type=password&client_id=task-api&username=bob&password=password234" | jq -r .access_token)
 curl -i -X POST http://localhost:8080/tasks \
-  -H "Authorization: Bearer tok_bob_qa_2e7a" \
+  -H "Authorization: Bearer $QA_TOKEN" \
   -H "Content-Type: application/json" -d '{"title":"x","priority":"low"}'
 # 403 Forbidden — qa role not permitted
 
+DEV_TOKEN=$(curl -s -X POST http://localhost:8083/realms/taskflow/protocol/openid-connect/token \
+  -d "grant_type=password&client_id=task-api&username=alice&password=password123" | jq -r .access_token)
 curl -X POST http://localhost:8080/tasks \
-  -H "Authorization: Bearer tok_alice_dev_9f1c" \
+  -H "Authorization: Bearer $DEV_TOKEN" \
   -H "Content-Type: application/json" -d '{"title":"x","priority":"low"}'
 # 201 Created — developer role permitted
 ```
 
-I verified the full matrix (401/403/200/201/204 across every operation and every role) by running both Flask services directly with `python main.py` and driving them with `curl` — no Docker or Specmatic license required for this part, since it's testing the application's own logic rather than the contract.
+I verified the full matrix (401/403/200/201/204 across every operation and every role) by running both Flask services directly and driving them with `curl`.
 
 Two smaller downstream fixes came out of turning this on:
-- The async `before`-hooks (`specs/asyncapi/examples/*.json`) call `POST /tasks` and `PUT /tasks/2` directly — they now carry an `Authorization: Bearer` header with the admin token, or `test-async` would start failing its setup calls with `401`.
-- The frontend's "Real Service" target hits `task-service:8080` directly from the browser, so it now sends the same demo admin credentials on every request — clearly commented as a lab/demo shortcut, not a login flow.
+- The async `before`-hooks (`specs/asyncapi/examples/*.json`) call `POST /tasks` and `PUT /tasks/2` directly — they now carry a placeholder `Authorization` header that the test entrypoint substitutes with a real fetched token, or `test-async` would start failing its setup calls with `401`.
+- The frontend's "Real Service" target hits `task-service:8080` directly from the browser, so it now fetches its own token from Keycloak on first use (password grant, cached) — clearly commented as a lab/demo shortcut, not a real login flow.
 
 ---
 

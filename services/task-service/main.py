@@ -3,6 +3,8 @@ import json
 import os
 from datetime import datetime, timezone
 from functools import wraps
+import jwt
+from jwt import PyJWKClient
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -11,15 +13,27 @@ CORS(app)
 
 KAFKA_BOOTSTRAP_SERVER = os.environ.get("KAFKA_BOOTSTRAP_SERVER", "localhost:9092")
 
-# Demo identity store — mirrors the accounts in the User Service.
-# GET uses Basic Auth, POST/PUT use a Bearer token, DELETE uses an API key.
+# POST/PUT /tasks are secured with a real Keycloak-issued OAuth2 JWT (see keycloak/taskflow-realm.json
+# for the realm/users). Signature is verified against Keycloak's JWKS endpoint; role comes from the
+# token's realm_access.roles claim. Audience AND issuer verification are deliberately skipped
+# (verify_aud=False, verify_iss=False): Keycloak derives the `iss` claim from whichever host/port the
+# token request came through, so a browser fetch (localhost:8083) and a Docker-network fetch
+# (keycloak:8080) get different issuer strings for the same realm — pinning one would break the other.
+# JWKS signature verification already proves the token was issued by this exact Keycloak instance's
+# private key, which is the check that actually matters for a single-realm demo like this one.
+KEYCLOAK_ISSUER = os.environ.get("KEYCLOAK_ISSUER", "http://keycloak:8080/realms/taskflow")
+_jwks_client = PyJWKClient(f"{KEYCLOAK_ISSUER}/protocol/openid-connect/certs")
+_KNOWN_ROLES = {"developer", "qa", "manager", "admin"}
+
+# Demo identity store — mirrors the accounts in the User Service (and the Keycloak realm's
+# users for the same four accounts/roles/passwords). GET uses Basic Auth, POST/PUT use a
+# Keycloak-issued OAuth2 bearer token, DELETE uses an API key.
 IDENTITIES = {
-    "alice": {"password": "password123", "role": "developer", "bearer_token": "tok_alice_dev_9f1c", "api_key": "key_alice_dev_1122"},
-    "bob": {"password": "password234", "role": "qa", "bearer_token": "tok_bob_qa_2e7a", "api_key": "key_bob_qa_3344"},
-    "diana": {"password": "password345", "role": "manager", "bearer_token": "tok_diana_mgr_5b3d", "api_key": "key_diana_mgr_5566"},
-    "charlie": {"password": "password456", "role": "admin", "bearer_token": "tok_charlie_admin_8a4f", "api_key": "key_charlie_admin_7788"},
+    "alice": {"password": "password123", "role": "developer", "api_key": "key_alice_dev_1122"},
+    "bob": {"password": "password234", "role": "qa", "api_key": "key_bob_qa_3344"},
+    "diana": {"password": "password345", "role": "manager", "api_key": "key_diana_mgr_5566"},
+    "charlie": {"password": "password456", "role": "admin", "api_key": "key_charlie_admin_7788"},
 }
-_BEARER_TOKENS = {v["bearer_token"]: v["role"] for v in IDENTITIES.values()}
 _API_KEYS = {v["api_key"]: v["role"] for v in IDENTITIES.values()}
 
 
@@ -59,9 +73,21 @@ def require_bearer_auth(allowed_roles):
             auth_header = request.headers.get("Authorization", "")
             if not auth_header.startswith("Bearer "):
                 return _unauthorized("Bearer token required")
-            role = _BEARER_TOKENS.get(auth_header[len("Bearer "):].strip())
+            token = auth_header[len("Bearer "):].strip()
+            try:
+                signing_key = _jwks_client.get_signing_key_from_jwt(token)
+                claims = jwt.decode(
+                    token,
+                    signing_key.key,
+                    algorithms=["RS256"],
+                    options={"verify_aud": False, "verify_iss": False},
+                )
+            except Exception:
+                return _unauthorized("Invalid or expired token")
+            token_roles = set(claims.get("realm_access", {}).get("roles", []))
+            role = next((r for r in ("developer", "qa", "manager", "admin") if r in token_roles), None)
             if not role:
-                return _unauthorized("Invalid bearer token")
+                return _unauthorized("Token does not carry a recognized role")
             if role not in allowed_roles:
                 return _forbidden(f"role '{role}' is not permitted to perform this action")
             return f(*args, **kwargs)

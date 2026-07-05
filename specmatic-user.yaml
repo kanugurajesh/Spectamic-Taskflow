@@ -37,11 +37,6 @@ specmatic:
         - html
       outputDirectory: build/reports/specmatic
     successCriteria:
-      # 401/403 are declared on every secured operation and actually exercised: dedicated external
-      # examples in specs/openapi/examples/user-api/ carry their own hardcoded (invalid or
-      # wrong-role) credentials per scenario, independent of the working credential configured
-      # below for the positive-path examples. That's what makes them "tested" instead of
-      # permanently "not tested" in the coverage report. Measured: 53 tests passing, 100%.
       minCoveragePercentage: 100
       maxMissedOperationsInSpec: 0
       enforce: true

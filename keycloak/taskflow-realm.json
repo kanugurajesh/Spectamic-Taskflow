@@ -1,0 +1,84 @@
+{
+  "realm": "taskflow",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": false,
+  "resetPasswordAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "developer", "description": "Can create and update tasks" },
+      { "name": "qa", "description": "Read-only role, cannot create or update tasks" },
+      { "name": "manager", "description": "Can create and update tasks" },
+      { "name": "admin", "description": "Full access, including deleting tasks" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "task-api",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "alice@example.com",
+      "firstName": "Alice",
+      "lastName": "Johnson",
+      "credentials": [
+        { "type": "password", "value": "password123", "temporary": false }
+      ],
+      "requiredActions": [],
+      "realmRoles": ["developer"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "bob@example.com",
+      "firstName": "Bob",
+      "lastName": "Smith",
+      "credentials": [
+        { "type": "password", "value": "password234", "temporary": false }
+      ],
+      "requiredActions": [],
+      "realmRoles": ["qa"]
+    },
+    {
+      "username": "diana",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "diana@example.com",
+      "firstName": "Diana",
+      "lastName": "Prince",
+      "credentials": [
+        { "type": "password", "value": "password345", "temporary": false }
+      ],
+      "requiredActions": [],
+      "realmRoles": ["manager"]
+    },
+    {
+      "username": "charlie",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "charlie@example.com",
+      "firstName": "Charlie",
+      "lastName": "Brown",
+      "credentials": [
+        { "type": "password", "value": "password456", "temporary": false }
+      ],
+      "requiredActions": [],
+      "realmRoles": ["admin"]
+    }
+  ]
+}

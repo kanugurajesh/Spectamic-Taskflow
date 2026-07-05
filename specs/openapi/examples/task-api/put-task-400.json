@@ -1,0 +1,22 @@
+{
+  "http-request": {
+    "path": "/tasks/2",
+    "method": "PUT",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "priority": "urgent"
+    }
+  },
+  "http-response": {
+    "status": 400,
+    "body": {
+      "error": "Validation failed",
+      "message": "priority must be one of ['high', 'low', 'medium']"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

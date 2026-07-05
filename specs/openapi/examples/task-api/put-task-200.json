@@ -1,0 +1,28 @@
+{
+  "http-request": {
+    "path": "/tasks/2",
+    "method": "PUT",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "status": "completed",
+      "assignee": "alice"
+    }
+  },
+  "http-response": {
+    "status": 200,
+    "body": {
+      "id": 2,
+      "title": "Write Unit Tests",
+      "description": "Add test coverage for auth module",
+      "status": "completed",
+      "assignee": "alice",
+      "priority": "medium",
+      "createdAt": "2024-01-15T11:00:00Z"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

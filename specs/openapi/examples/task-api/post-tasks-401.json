@@ -15,7 +15,7 @@
     "status": 401,
     "body": {
       "error": "Unauthorized",
-      "message": "Invalid bearer token"
+      "message": "Invalid or expired token"
     },
     "status-text": "Unauthorized",
     "headers": {

@@ -28,9 +28,9 @@ systemUnderTest:
                 basicAuth:
                   type: basicAuth
                   token: ${TASK_BASIC_AUTH_TOKEN:Y2hhcmxpZTpwYXNzd29yZDQ1Ng==}
-                bearerAuth:
-                  type: bearer
-                  token: ${TASK_BEARER_TOKEN:tok_charlie_admin_8a4f}
+                oAuth2AuthCode:
+                  type: oauth2
+                  token: ${TASK_OAUTH_TOKEN:no_token_fetched_see_docker_compose_entrypoint}
                 apiKeyAuth:
                   type: apiKey
                   token: ${TASK_API_KEY:key_charlie_admin_7788}
@@ -56,11 +56,6 @@ specmatic:
         - html
       outputDirectory: build/reports/specmatic
     successCriteria:
-      # 401/403 are declared on every secured operation and actually exercised: dedicated external
-      # examples in specs/openapi/examples/task-api/ carry their own hardcoded (invalid or
-      # wrong-role) credentials per scenario, independent of the working credential configured
-      # below for the positive-path examples. That's what makes them "tested" instead of
-      # permanently "not tested" in the coverage report. Measured: 143+2 tests passing, 100%.
       minCoveragePercentage: 100
       maxMissedOperationsInSpec: 0
       enforce: true

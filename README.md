@@ -43,7 +43,7 @@ This gets worse with AI coding agents. When you ask an LLM to generate a service
 | REST contract testing (OpenAPI 3.0.1) | `specs/openapi/task-api.yaml`, `user-api.yaml` |
 | Async event contract testing (AsyncAPI 3.0.0) | `specs/asyncapi/task-events.yaml` |
 | Schema resiliency testing (`all` — positive + negative) | `specmatic.yaml` → `settings.test.schemaResiliencyTests` |
-| Multiple OpenAPI security schemes (Basic, Bearer, API key) + role-based authorization | `task-api.yaml`, `user-api.yaml` → `components.securitySchemes`, enforced in `services/*/main.py` |
+| Multiple OpenAPI security schemes (Basic, OAuth2/Keycloak, API key) + role-based authorization | `task-api.yaml`, `user-api.yaml` → `components.securitySchemes`, enforced in `services/*/main.py` |
 | Service virtualization (mock server) | `--profile mock` |
 | Governance: 100% coverage enforcement | `specmatic.yaml` |
 | Specmatic Studio (visual contract IDE) | `--profile studio` |
@@ -65,6 +65,11 @@ This gets worse with AI coding agents. When you ask an LLM to generate a service
 │   ┌──────────────────┐                                         │
 │   │   Apache Kafka   │  topics: task-created, task-updated     │
 │   │      :9092       │                                         │
+│   └──────────────────┘                                         │
+│                                                                 │
+│   ┌──────────────────┐                                         │
+│   │    Keycloak      │  OAuth2 IdP for POST/PUT /tasks :8083    │
+│   │      :8083       │  realm: taskflow (see keycloak/*.json)   │
 │   └──────────────────┘                                         │
 │                                                                 │
 │   ┌──────────────────┐                                         │
@@ -282,19 +287,27 @@ specmatic-taskflow/
 ├── README.md                       ← you are here
 ├── specmatic.yaml                  ← Task API (OpenAPI) + task-events (AsyncAPI) config, one systemUnderTest.service
 ├── specmatic-user.yaml             ← User API contract test config (own baseUrl + securitySchemes)
-├── docker-compose.yaml             ← Full orchestration
+├── docker-compose.yaml             ← Full orchestration; test-task-api's entrypoint fetches
+│                                      real Keycloak tokens before running specmatic test
 ├── create-kafka-topics.sh          ← Kafka topic bootstrap
+│
+├── keycloak/
+│   └── taskflow-realm.json         ← Realm export: task-api client, 4 demo users/roles
 │
 ├── specs/
 │   ├── openapi/
 │   │   ├── task-api.yaml           ← Task Service contract (5 endpoints, isolated example IDs)
 │   │   ├── user-api.yaml           ← User Service contract (3 endpoints, 5 examples incl. 400)
 │   │   └── examples/
-│   │       ├── task-api/           ← External 401/403 examples, each with its own hardcoded credential
-│   │       └── user-api/           ← Same, for the User Service's single apiKeyAuth scheme
+│   │       ├── task-api/           ← External 401/403/positive-path examples for POST/PUT
+│   │       │                          (OAuth2/Keycloak) plus the static-scheme 401/403 cases;
+│   │       │                          role-specific ones use a placeholder token substituted
+│   │       │                          at test-run time (see docker-compose.yaml)
+│   │       └── user-api/           ← Static apiKeyAuth 401/403 examples, hardcoded credentials
 │   └── asyncapi/
 │       ├── task-events.yaml        ← Task event contracts (2 channels)
 │       └── examples/               ← Before-hooks that trigger publishes via the REST API
+│                                      (Authorization header is a substituted placeholder too)
 │
 ├── frontend/
 │   ├── index.html                  ← Kanban board SPA (Tailwind + vanilla JS)
@@ -302,7 +315,8 @@ specmatic-taskflow/
 │
 └── services/
     ├── task-service/
-    │   ├── main.py                 ← Flask CRUD + CORS + Kafka publishing (seeded: tasks 1–3)
+    │   ├── main.py                 ← Flask CRUD + CORS + Kafka publishing + Keycloak JWT
+    │   │                              validation via JWKS (seeded: tasks 1–3)
     │   ├── requirements.txt
     │   └── Dockerfile
     └── user-service/
@@ -351,7 +365,7 @@ Following the pattern from Specmatic's [`api-security-schemes`](../api-security-
 | Operation | Scheme | Authorization rule |
 |---|---|---|
 | `GET /tasks`, `GET /tasks/{taskId}` | HTTP Basic | Any valid account may read |
-| `POST /tasks`, `PUT /tasks/{taskId}` | Bearer token | Role must be `developer`, `manager`, or `admin` (not `qa`) |
+| `POST /tasks`, `PUT /tasks/{taskId}` | OAuth2 (Keycloak, authorization-code scheme) | Role must be `developer`, `manager`, or `admin` (not `qa`) |
 | `DELETE /tasks/{taskId}` | API key (`X-API-Key`) | Role must be `admin` |
 
 **User API** (`specs/openapi/user-api.yaml`) uses one scheme for all operations, with an elevated-role check on the write path:
@@ -361,16 +375,16 @@ Following the pattern from Specmatic's [`api-security-schemes`](../api-security-
 | `GET /users`, `GET /users/{userId}` | API key (`X-API-Key`) | Any valid account may read |
 | `POST /users` | API key (`X-API-Key`) | Role must be `admin` or `manager` |
 
-Demo accounts (shared, hardcoded identity store in both services — see `IDENTITIES` / `API_KEYS` in `services/*/main.py`):
+Demo accounts (shared identity across both services and the Keycloak realm — see `IDENTITIES` / `API_KEYS` in `services/*/main.py` and `keycloak/taskflow-realm.json`; the same password works for both HTTP Basic and the Keycloak login since they're the same account):
 
-| Username | Role | Basic password | Bearer token | API key |
-|---|---|---|---|---|
-| alice | developer | `password123` | `tok_alice_dev_9f1c` | `key_alice_dev_1122` |
-| bob | qa | `password234` | `tok_bob_qa_2e7a` | `key_bob_qa_3344` |
-| diana | manager | `password345` | `tok_diana_mgr_5b3d` | `key_diana_mgr_5566` |
-| charlie | admin | `password456` | `tok_charlie_admin_8a4f` | `key_charlie_admin_7788` |
+| Username | Role | Basic / Keycloak password | API key |
+|---|---|---|---|
+| alice | developer | `password123` | `key_alice_dev_1122` |
+| bob | qa | `password234` | `key_bob_qa_3344` |
+| diana | manager | `password345` | `key_diana_mgr_5566` |
+| charlie | admin | `password456` | `key_charlie_admin_7788` |
 
-Try it against the running services:
+Try it against the running services. POST/PUT need a real Keycloak access token first — the Task Service validates it against Keycloak's JWKS endpoint, so unlike Basic Auth or the API key, this can't be a static string:
 
 ```bash
 # 401 — no credentials
@@ -379,14 +393,22 @@ curl -i http://localhost:8080/tasks
 # 200 — any valid account can read
 curl -u alice:password123 http://localhost:8080/tasks
 
-# 403 — qa is authenticated but not allowed to create tasks
+# Get a real token for bob (qa) from Keycloak
+QA_TOKEN=$(curl -s -X POST http://localhost:8083/realms/taskflow/protocol/openid-connect/token \
+  -d "grant_type=password&client_id=task-api&username=bob&password=password234" | jq -r .access_token)
+
+# 403 — qa is authenticated (valid JWT) but not allowed to create tasks
 curl -i -X POST http://localhost:8080/tasks \
-  -H "Authorization: Bearer tok_bob_qa_2e7a" \
+  -H "Authorization: Bearer $QA_TOKEN" \
   -H "Content-Type: application/json" -d '{"title":"x","priority":"low"}'
+
+# Get a real token for alice (developer)
+DEV_TOKEN=$(curl -s -X POST http://localhost:8083/realms/taskflow/protocol/openid-connect/token \
+  -d "grant_type=password&client_id=task-api&username=alice&password=password123" | jq -r .access_token)
 
 # 201 — developer role is allowed
 curl -X POST http://localhost:8080/tasks \
-  -H "Authorization: Bearer tok_alice_dev_9f1c" \
+  -H "Authorization: Bearer $DEV_TOKEN" \
   -H "Content-Type: application/json" -d '{"title":"x","priority":"low"}'
 
 # 403 — developer key, but DELETE requires admin
@@ -396,24 +418,26 @@ curl -i -X DELETE http://localhost:8080/tasks/3 -H "X-API-Key: key_alice_dev_112
 curl -i -X DELETE http://localhost:8080/tasks/3 -H "X-API-Key: key_charlie_admin_7788"
 ```
 
-**How Specmatic tests this:** `specmatic.yaml` (Task API) and `specmatic-user.yaml` (User API) each configure a single working `charlie`/admin credential per scheme under `runOptions.openapi.specs[].spec.securitySchemes`, keyed to the spec via a matching `id` (`taskApiSpec` / `userApiSpec`) on both the `systemUnderTest.service.definitions` entry and the `runOptions` override — so the existing example-based and schema-resiliency test scenarios keep passing against an authenticated backend. This validates *authentication* — Specmatic attaches the configured credential to every generated request for a secured operation, so a wrong or missing value there causes every scenario against that operation to fail with `401`, exactly like the reference lab demonstrates. Verified live: `docker compose run test-task-api` → 143/143 REST tests passing (100% coverage) plus 2/2 async Kafka event tests in the same run, `test-user-api` → 53/53 (100% coverage).
+**How Specmatic tests this:** `specmatic-user.yaml` configures a single working `charlie`/admin credential for `apiKeyAuth` under `runOptions.openapi.specs[].spec.securitySchemes`. `specmatic.yaml`'s `basicAuth` and `apiKeyAuth` work the same way. The `oAuth2AuthCode` scheme (POST/PUT /tasks) can't — a static string in a config file can't be a valid Keycloak-signed JWT, and tokens expire in minutes anyway — so `docker-compose.yaml`'s `test-task-api` entrypoint fetches a **real** token from Keycloak (`alice`, developer role) at the start of every run and exports it as `TASK_OAUTH_TOKEN`, which `specmatic.yaml` reads via `${TASK_OAUTH_TOKEN:...}` exactly like the static schemes. This validates *authentication* — Specmatic attaches the configured credential to every generated request for a secured operation, so a wrong or missing value there causes every scenario against that operation to fail with `401`, exactly like the reference lab demonstrates. Verified live: `docker compose run test-task-api` → 143/143 REST tests passing (100% coverage) plus 2/2 async Kafka event tests in the same run, `test-user-api` → 53/53 (100% coverage).
 
 OpenAPI's `security` keyword only models authentication (who you are), not custom authorization rules (what your role permits) — the single credential configured above only covers the *positive*-path example and schema-resiliency scenarios. The role-based authorization above is therefore real, enforced application logic (see the curl walkthrough), and it's proven twice: once live via curl, and once as genuine, counted contract-test scenarios (next section).
 
-**How 401/403 became real, counted coverage — not just declared response shapes:** an early version of this project declared `401`/`403` on every secured operation with no examples, reasoning that a contract-test run only ever attaches *one* configured credential per scheme, so those codes could never actually be triggered — permanently "not tested," capping coverage at 58%/56%. That reasoning turned out to be an artifact of relying solely on the global `runOptions...securitySchemes` credential, not a real limitation of Specmatic. The [`api-security-schemes`](../api-security-schemes) lab's actual contract (fetched from `specmatic/labs-contracts` at test time — not visible in this repo's local checkout of that lab) proves it: its `auth_examples/` directory has dedicated external example files like `post-orders_application_json_401.json` (a hardcoded bad bearer token) and `post-orders-create-forbidden.json` (a `before` fixture that logs into Keycloak as a real, valid, wrong-role user), each carrying its **own** credential independent of the global config — so they execute as real scenarios, hit the server, and get counted as tested.
+**How 401/403 became real, counted coverage — not just declared response shapes:** an early version of this project declared `401`/`403` on every secured operation with no examples, reasoning that a contract-test run only ever attaches *one* configured credential per scheme, so those codes could never actually be triggered — permanently "not tested," capping coverage at 58%/56%. That reasoning turned out to be an artifact of relying solely on the global `runOptions...securitySchemes` credential, not a real limitation of Specmatic. The [`api-security-schemes`](../api-security-schemes) lab's actual contract (fetched from `specmatic/labs-contracts` at test time — not visible in this repo's local checkout of that lab) proves it: its `auth_examples/` directory has dedicated external example files like `post-orders_application_json_401.json` (a hardcoded bad bearer token) and `post-orders-create-forbidden.json` (a `before` fixture that logs into Keycloak as a real, valid, wrong-role user), each carrying its **own** credential independent of the global config — so they execute as real scenarios, hit the server, and get counted as tested. That's also *why* this project migrated `bearerAuth` (a static token, same category as the API key) to a real `oAuth2AuthCode` scheme backed by Keycloak: proving the pattern properly needs a real credential per role, not just a bigger fake string.
 
-This project now does the same thing, minus the OAuth login step (our schemes are static Basic/Bearer/API-key credentials, so no `before` fixture is needed — the bad or wrong-role value can just be hardcoded directly into the example). `specs/openapi/examples/task-api/` and `specs/openapi/examples/user-api/` each hold one external example file per 401/403 case — e.g. `post-tasks-403.json` sends `Authorization: Bearer tok_bob_qa_2e7a` (bob's real qa token — valid credential, wrong role) and expects `403`; `delete-task-401.json` sends a garbage `X-API-Key` and expects `401`. They're wired in via `data.examples.directories` in `specmatic.yaml` / `specmatic-user.yaml` (the same mechanism this project already used for the async Kafka `before`-hooks). One gotcha hit while building these: for the `basicAuth`/`apiKeyAuth` operations, omitting the auth header entirely in the example doesn't produce a 401 — Specmatic still auto-attaches the globally configured *valid* credential to fill the gap. The fix is to explicitly set the header to some other (invalid) value in the example, which takes precedence over the global default.
+`specs/openapi/examples/task-api/` and `specs/openapi/examples/user-api/` each hold one external example file per 401/403 case (plus, for the OAuth2 operations, the positive-path/400/404 cases too — see below). For the still-static schemes it's simple: e.g. `delete-task-401.json` sends a garbage `X-API-Key` and expects `401`; `delete-task-403.json` sends alice's real (developer, wrong-role) API key and expects `403`. They're wired in via `data.examples.directories` in `specmatic.yaml` / `specmatic-user.yaml` (the same mechanism this project already used for the async Kafka `before`-hooks). One gotcha hit while building these: for the `basicAuth`/`apiKeyAuth` operations, omitting the auth header entirely in the example doesn't produce a 401 — Specmatic still auto-attaches the globally configured *valid* credential to fill the gap. The fix is to explicitly set the header to some other (invalid) value in the example, which takes precedence over the global default.
 
-With these 12 examples in place, both specs measure **100% coverage with every test passing** — `minCoveragePercentage: 100` in both `specmatic.yaml` and `specmatic-user.yaml`, no artificial ceiling needed.
+**The OAuth2 operations needed a different, more involved fix.** The natural design — a `before` fixture in each example that logs into Keycloak for the right role, capturing the token via Specmatic's documented `"(ACCESS_TOKEN:string)"` capture syntax — turned out not to work: there is no mechanism in this Specmatic version (Enterprise v1.16.0) to forward a value captured in one request into a *later* request, whether written explicitly as `$(ACCESS_TOKEN)` in the next header or left implicit the way the reference lab's own example files do it (I checked their files byte-for-byte; they never reference the captured variable anywhere, and removing my own explicit header just made Specmatic fall back to the global credential instead — confirmed with real Docker runs, not just spec-reading). So the actual fix lives in `docker-compose.yaml`'s `test-task-api` entrypoint: it copies the repo into a scratch directory (the real bind mount is read-only, so tests never mutate checked-in files), fetches real tokens for alice (developer) and bob (qa) from Keycloak, and `sed`-substitutes them into the example files that need a *specific* role (`post-tasks-403.json`, `put-task-403.json`, and the two async before-hooks) before invoking `specmatic test`. Examples that just need *any* valid allowed-role token (the positive-path/400/404 cases) don't need substitution at all — they have no explicit `Authorization` header, so they pick up `TASK_OAUTH_TOKEN` (alice's freshly-fetched token) from the global config automatically, the same mechanism as `basicAuth`/`apiKeyAuth`.
+
+With these examples in place, both specs measure **100% coverage with every test passing** — `minCoveragePercentage: 100` in both `specmatic.yaml` and `specmatic-user.yaml`, no artificial ceiling needed.
 
 ### Intentional Failure
 
 Following the same technique as the [`api-security-schemes`](../api-security-schemes) lab: override the *configured* credential and re-run the exact same suite to prove authentication is real, enforced behavior — not just declared response shapes.
 
-`TASK_BEARER_TOKEN` defaults to `charlie`'s admin token (`tok_charlie_admin_8a4f`) in `specmatic.yaml`. Override it at run time with `-e` (a plain `VAR=value` prefix on `docker compose run` does **not** reach the container unless the compose file already lists that variable — `-e` forwards it explicitly):
+The entrypoint script fetches `TASK_OAUTH_TOKEN` by logging into Keycloak as `KEYCLOAK_DEV_USERNAME`/`KEYCLOAK_DEV_PASSWORD` (default: alice, developer). Override those at run time with `-e` (a plain `VAR=value` prefix on `docker compose run` does **not** reach the container unless the compose file already lists that variable — `-e` forwards it explicitly):
 
 ```bash
-# Baseline — the configured admin credential works
+# Baseline — alice's real developer-role token works
 docker compose run --rm --no-deps test-task-api
 # Tests run: 143, Successes: 143, Failures: 0 — 100% coverage
 
@@ -422,15 +446,15 @@ docker compose run --rm --no-deps test-task-api
 # 204/403/401 and the failure/coverage counts below are off by one.
 docker compose restart task-service
 
-# 401 — override with a garbage token
-docker compose run --rm --no-deps -e TASK_BEARER_TOKEN=invalid_garbage_token test-task-api
+# 401 — wrong password, so the token fetch itself fails and every downstream request gets 401
+docker compose run --rm --no-deps -e KEYCLOAK_DEV_PASSWORD=wrong_password test-task-api
 # Tests run: 143, Successes: 123, Failures: 20 — 79% coverage — governance FAILS (exit 1)
 # every failure: "Specification expected status 201/200 but response contained status 401"
 
 docker compose restart task-service
 
-# 403 — override with bob's valid qa token
-docker compose run --rm --no-deps -e TASK_BEARER_TOKEN=tok_bob_qa_2e7a test-task-api
+# 403 — swap in bob's real (valid, but qa-role) account
+docker compose run --rm --no-deps -e KEYCLOAK_DEV_USERNAME=bob -e KEYCLOAK_DEV_PASSWORD=password234 test-task-api
 # Tests run: 143, Successes: 123, Failures: 20 — 79% coverage — governance FAILS (exit 1)
 # every failure: "...but response contained status 403" (bob authenticates fine, qa role isn't permitted)
 
@@ -441,7 +465,7 @@ docker compose run --rm --no-deps test-task-api
 # Tests run: 143, Successes: 143, Failures: 0 — 100% coverage
 ```
 
-The same 20 scenarios fail in each override, regardless of which one — the *auto-generated* positive-path examples and schema-resiliency variations (which rely on the global `TASK_BEARER_TOKEN` credential being valid) now get whatever the broken override produces, and fail because they demand one *specific* status (the 201/200 positive-path examples, plus a couple of negative 400 examples that happen to collide). `GET /tasks`/`GET /tasks/{taskId}` (basicAuth) and `DELETE /tasks/{taskId}` (apiKeyAuth) are untouched by either override — only the bearer-secured operations move. Crucially, the 8 dedicated `task-api` auth examples described above are **unaffected by either override** — they hardcode their own credential (bob's real qa token, a garbage token, alice's real developer key) directly in the example file rather than reading `TASK_BEARER_TOKEN`, so they keep passing no matter what the environment variable is set to. Since `minCoveragePercentage` is now a strict `100`, either override also fails governance outright (`docker compose run` exits `1`) — a stronger, more obviously-broken signal than the old 58%-ceiling version, where an override could drop coverage without necessarily crossing the (already-low) threshold. `task-service` needs a restart (`docker compose restart task-service`) **before every run in this sequence, including before the first override**, not just between the two overrides — every run's own DELETE scenario consumes seed task 3, so skipping a restart leaves the next run's DELETE test facing a 404 instead of its expected status, which quietly changes the failure count.
+The same 20 scenarios fail in each override, regardless of which one — the *auto-generated* positive-path examples and schema-resiliency variations (which rely on the global `TASK_OAUTH_TOKEN` credential being valid) now get whatever the broken override produces, and fail because they demand one *specific* status (the 201/200 positive-path examples, plus a couple of negative 400 examples that happen to collide). `GET /tasks`/`GET /tasks/{taskId}` (basicAuth) and `DELETE /tasks/{taskId}` (apiKeyAuth) are untouched by either override — only the OAuth2-secured operations move. Crucially, the `post-tasks-403`/`put-task-403` examples are **unaffected by either override** — they fetch bob's token separately via `KEYCLOAK_QA_USERNAME`/`KEYCLOAK_QA_PASSWORD` (left at their defaults in both overrides above), so they keep passing no matter what happens to the dev credential. Since `minCoveragePercentage` is now a strict `100`, either override also fails governance outright (`docker compose run` exits `1`). `task-service` needs a restart (`docker compose restart task-service`) **before every run in this sequence, including before the first override**, not just between the two overrides — every run's own DELETE scenario consumes seed task 3, so skipping a restart leaves the next run's DELETE test facing a 404 instead of its expected status, which quietly changes the failure count.
 
 ---
 
@@ -500,8 +524,8 @@ Schema resiliency generates more tests, which means more mutations. A DELETE tes
 **7. AI coding agents need executable contracts more than humans do.**
 Humans can read documentation and ask questions. AI agents need machine-readable, executable constraints. Specmatic contracts are exactly that.
 
-**8. Authentication and authorization are different testing problems.**
-OpenAPI `security` schemes model authentication — Specmatic can attach a configured credential to every request and prove the service rejects wrong or missing ones. They don't model per-role authorization: a single contract-test run uses one credential per scheme, so it can't assert "admin succeeds, qa gets 403" in the same run. That check has to live in the application (and be verified directly, e.g. via curl) rather than in the contract test.
+**8. Authentication and authorization are different testing problems — but both are testable in one run, with the right examples.**
+OpenAPI `security` schemes model authentication only — the one global credential configured per scheme proves the service rejects wrong or missing ones. My first instinct was that per-role authorization couldn't be asserted in the same run ("admin succeeds, qa gets 403"), since a run only has one configured credential per scheme. That's wrong: dedicated external examples, each carrying its **own** credential independent of the global one, let "admin succeeds" and "qa gets 403" both be real, counted Specmatic scenarios in a single run — not just something verified separately via curl. The one genuine limitation is mechanical, not conceptual: Specmatic (at least in this version) has no way to forward a value captured in one request into a later request within the same example, so a role that needs a dynamically-issued credential (like a Keycloak JWT) has to get that credential from somewhere else — a `docker-compose` entrypoint script fetching real tokens and substituting them, in this project's case — rather than from the example file alone.
 
 ---
 
@@ -558,7 +582,17 @@ Two more layers surfaced only once I actually ran the suite in Docker (schema va
 
 My first fix was to lower `minCoveragePercentage` to that measured ceiling (58/56) and move on — CI stayed green, but I'd mistaken "the global credential override can't trigger this" for "Specmatic can't test this," which isn't the same claim. A founder review of this submission caught it by pointing at the [`api-security-schemes`](../api-security-schemes) lab: its actual contract (pulled from `specmatic/labs-contracts` at test time) has an `auth_examples/` directory of external example files that each carry their **own** credential — a hardcoded bad token, or a `before` fixture that logs into Keycloak as a real, valid, wrong-role user — completely independent of the one global credential used for the positive-path scenarios. That's the actual mechanism for testing 401/403 for real: not the `security:` keyword alone, and not a lowered coverage ceiling, but per-scenario examples that bring their own auth.
 
-I added the equivalent here — `specs/openapi/examples/task-api/` and `specs/openapi/examples/user-api/`, 12 external example files total, wired in via `data.examples.directories` (the same mechanism already used for the async Kafka `before`-hooks) — minus the OAuth login step, since our Basic/Bearer/API-key schemes are static and the bad/wrong-role value can be hardcoded directly into the example. One extra gotcha this surfaced: for `basicAuth`/`apiKeyAuth` operations, just omitting the auth header in an example doesn't produce `401` — Specmatic still auto-attaches the globally configured *valid* credential to fill the gap, so the example has to explicitly set the header to some other value to override it. With all 12 in place, both specs measure genuine **100% coverage with every test passing** (`minCoveragePercentage: 100` in both configs, no ceiling workaround). See "Intentional Failure" under Security Schemes for the full before/after walkthrough, including why the dedicated examples keep passing even when the global credential is deliberately broken.
+I added the equivalent here — `specs/openapi/examples/task-api/` and `specs/openapi/examples/user-api/`, wired in via `data.examples.directories` (the same mechanism already used for the async Kafka `before`-hooks). For the static `basicAuth`/`apiKeyAuth` operations this was simple: one extra gotcha surfaced — just omitting the auth header in an example doesn't produce `401`, Specmatic still auto-attaches the globally configured *valid* credential to fill the gap, so the example has to explicitly set the header to some other value to override it. The `bearerAuth` (POST/PUT /tasks) case needed a bigger, separate fix — see Challenge 9. With everything in place, both specs measure genuine **100% coverage with every test passing** (`minCoveragePercentage: 100` in both configs, no ceiling workaround). See "Intentional Failure" under Security Schemes for the full before/after walkthrough, including why the dedicated examples keep passing even when the global credential is deliberately broken.
+
+### 9. Migrating `bearerAuth` to real Keycloak OAuth2: three separate assumptions failed before finding the actual fix
+
+Proving 401/403 "for real" (Challenge 8) worked cleanly for `basicAuth`/`apiKeyAuth` because those are static, pre-shared credentials — but `bearerAuth` was *also* just a static string (`tok_alice_dev_9f1c` etc.) checked against a hardcoded dictionary, which isn't really testing OAuth2 at all. Migrating it to a real Keycloak-backed `oAuth2AuthCode` scheme surfaced a chain of issues, each only visible by actually running the stack, not by reading Specmatic's docs or the reference lab's files:
+
+- **Keycloak's health endpoint isn't where you'd expect, and the image has no curl.** The `quay.io/keycloak/keycloak` image ships no `curl`/`wget`, and Keycloak 26 serves `/health/ready` on the *management* port (9000), not the main port (8080) the healthcheck was originally pointed at. Fixed with a `CMD-SHELL` healthcheck using bash's built-in `/dev/tcp` to speak raw HTTP — no external tool needed.
+- **A fresh realm import fails login with "Account is not fully set up," and it isn't about required actions.** Every user had `requiredActions: []` explicitly, confirmed via Keycloak's admin API — the real cause was Keycloak 26's declarative User Profile marking `firstName`/`lastName` as required by default, so any imported user missing them fails the (dynamically-computed) `VERIFY_PROFILE` check at login. Fixed by adding `firstName`/`lastName` to every user in `keycloak/taskflow-realm.json`.
+- **The same token has a different `iss` claim depending on how you asked for it.** Keycloak derives the issuer from the request's Host header by default, so a token fetched by the browser (`localhost:8083`) and one fetched from inside the Docker network (`keycloak:8080`) get different `iss` values for the *same* realm. Trying to pin it via `KC_HOSTNAME`/`KC_HOSTNAME_PORT` env vars didn't produce the expected value either. Given JWKS signature verification already proves a token came from this exact Keycloak instance's private key, I just disabled issuer (and audience) verification in Flask (`verify_iss: False`, `verify_aud: False`) rather than chase a fragile pin — a documented, deliberate simplification for a single-realm demo, not an oversight.
+- **There is no way to forward a value captured in one request into a later request within a Specmatic example, in this version.** The natural design — a `before` fixture logs into Keycloak, captures `"(ACCESS_TOKEN:string)"`, the next request references `$(ACCESS_TOKEN)` — never worked. I tried the exact byte-for-byte pattern from the reference lab's own `auth_examples/` (no explicit header at all, relying on undocumented auto-binding): fell back to the global credential instead. I tried the documented capture/reference syntax explicitly in the header: sent the literal string `$(ACCESS_TOKEN)` verbatim, completely unsubstituted. Tested in both the `before`+`partial` REST format and the sequential `before` array used by the async Kafka hooks — same result in both. Confirmed with real Docker output each time, not assumed from a doc summary.
+- **The actual fix: substitute tokens into a scratch copy of the repo before running tests.** `test-task-api`'s entrypoint in `docker-compose.yaml` now copies the (read-only-mounted) repo into `/tmp/app`, fetches real tokens for alice (developer) and bob (qa) directly from Keycloak, `sed`-substitutes them into the two examples and two async hooks that need a *specific* role, and exports the developer token as `TASK_OAUTH_TOKEN` for everything else (which — like `basicAuth`/`apiKeyAuth` — just needs *some* valid allowed-role credential, picked up automatically since those examples have no explicit `Authorization` header). One more `cp` gotcha along the way: Docker auto-creates `working_dir` as an empty directory before the entrypoint runs, so `cp -r /src /tmp/app` copies `/src` as a *subdirectory* of the already-existing `/tmp/app` instead of populating it — `cp -r /src/. /tmp/app/` (copying contents, not the directory itself) was needed instead.
 
 ---
 

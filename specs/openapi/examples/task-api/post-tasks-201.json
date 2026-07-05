@@ -1,0 +1,30 @@
+{
+  "http-request": {
+    "path": "/tasks",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "title": "Write Unit Tests",
+      "description": "Add tests for the authentication module",
+      "assignee": "bob",
+      "priority": "medium"
+    }
+  },
+  "http-response": {
+    "status": 201,
+    "body": {
+      "id": "(number)",
+      "title": "Write Unit Tests",
+      "description": "Add tests for the authentication module",
+      "status": "pending",
+      "assignee": "bob",
+      "priority": "medium",
+      "createdAt": "(datetime)"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

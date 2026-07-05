@@ -310,8 +310,22 @@
   // the security schemes in task-api.yaml. This is a lab/demo app, not a login flow —
   // the mock server (:9100) ignores these headers entirely.
   const DEMO_BASIC_AUTH = 'Basic ' + btoa('charlie:password456');
-  const DEMO_BEARER_AUTH = 'Bearer tok_charlie_admin_8a4f';
   const DEMO_API_KEY = 'key_charlie_admin_7788';
+
+  // POST/PUT /tasks require a real Keycloak-issued OAuth2 token (see keycloak/taskflow-realm.json).
+  // Fetched once via the password grant and cached — a lab/demo shortcut, not a real login flow.
+  let _bearerToken = null;
+  async function getBearerAuth() {
+    if (_bearerToken) return 'Bearer ' + _bearerToken;
+    const res = await fetch('http://localhost:8083/realms/taskflow/protocol/openid-connect/token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'grant_type=password&client_id=task-api&username=charlie&password=password456',
+    });
+    const data = await res.json();
+    _bearerToken = data.access_token;
+    return 'Bearer ' + _bearerToken;
+  }
 
   // ── API switcher ──────────────────────────────────────────────────────────────
   function setApi(url, optId) {
@@ -490,7 +504,7 @@
     try {
       const res = await fetch(`${API}/tasks`, {
         method: 'POST',
-        headers: {'Content-Type':'application/json', 'Authorization': DEMO_BEARER_AUTH},
+        headers: {'Content-Type':'application/json', 'Authorization': await getBearerAuth()},
         body: JSON.stringify({
           title:    document.getElementById('f-title').value.trim(),
           description: document.getElementById('f-desc').value.trim(),
@@ -577,7 +591,7 @@
     try {
       const res = await fetch(`${API}/tasks/${id}`, {
         method: 'PUT',
-        headers: {'Content-Type':'application/json', 'Authorization': DEMO_BEARER_AUTH},
+        headers: {'Content-Type':'application/json', 'Authorization': await getBearerAuth()},
         body: JSON.stringify({ status: newStatus, assignee: task?.assignee || '' }),
       });
       if (!res.ok) throw new Error();

@@ -4,7 +4,7 @@
     "method": "POST",
     "headers": {
       "Content-Type": "application/json",
-      "Authorization": "Bearer tok_bob_qa_2e7a"
+      "Authorization": "Bearer __QA_TOKEN_PLACEHOLDER__"
     },
     "body": {
       "title": "Attempted create by qa role",

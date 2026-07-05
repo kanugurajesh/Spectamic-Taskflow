@@ -62,24 +62,13 @@ paths:
     post:
       summary: Create a new task
       security:
-        - bearerAuth: []
+        - oAuth2AuthCode: [tasks]
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateTaskRequest'
-            examples:
-              CREATE_TASK_201:
-                value:
-                  title: "Write Unit Tests"
-                  description: "Add tests for the authentication module"
-                  assignee: "bob"
-                  priority: "medium"
-              CREATE_TASK_400:
-                value:
-                  description: "Missing required title field"
-                  priority: "low"
       responses:
         '201':
           description: Task created successfully
@@ -87,27 +76,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Task'
-              examples:
-                CREATE_TASK_201:
-                  value:
-                    id: 100
-                    title: "Write Unit Tests"
-                    description: "Add tests for the authentication module"
-                    status: "pending"
-                    assignee: "bob"
-                    priority: "medium"
-                    createdAt: "2024-01-15T11:00:00Z"
         '400':
           description: Validation error — required fields missing
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-              examples:
-                CREATE_TASK_400:
-                  value:
-                    error: "Validation failed"
-                    message: "title is required"
         '401':
           description: Missing or invalid credentials
           content:
@@ -175,37 +149,19 @@ paths:
     put:
       summary: Update a task
       security:
-        - bearerAuth: []
+        - oAuth2AuthCode: [tasks]
       parameters:
         - name: taskId
           in: path
           required: true
           schema:
             type: integer
-          examples:
-            UPDATE_TASK_200:
-              value: 2
-            UPDATE_TASK_404:
-              value: 999
-            UPDATE_TASK_400:
-              value: 2
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/UpdateTaskRequest'
-            examples:
-              UPDATE_TASK_200:
-                value:
-                  status: "completed"
-                  assignee: "alice"
-              UPDATE_TASK_404:
-                value:
-                  status: "completed"
-              UPDATE_TASK_400:
-                value:
-                  priority: "urgent"
       responses:
         '200':
           description: Task updated
@@ -213,38 +169,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Task'
-              examples:
-                UPDATE_TASK_200:
-                  value:
-                    id: 2
-                    title: "Write Unit Tests"
-                    description: "Add test coverage for auth module"
-                    status: "completed"
-                    assignee: "alice"
-                    priority: "medium"
-                    createdAt: "2024-01-15T11:00:00Z"
         '404':
           description: Task not found
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-              examples:
-                UPDATE_TASK_404:
-                  value:
-                    error: "Not Found"
-                    message: "Task with id 999 not found"
         '400':
           description: Validation error — invalid field value
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-              examples:
-                UPDATE_TASK_400:
-                  value:
-                    error: "Validation failed"
-                    message: "priority must be one of ['high', 'low', 'medium']"
         '401':
           description: Missing or invalid credentials
           content:
@@ -373,10 +309,15 @@ components:
       type: http
       scheme: basic
       description: HTTP Basic Authentication — required to read tasks (any valid account)
-    bearerAuth:
-      type: http
-      scheme: bearer
-      description: Bearer token authentication — required to create or update tasks (developer, manager, or admin role)
+    oAuth2AuthCode:
+      type: oauth2
+      description: Keycloak-backed OAuth2 — required to create or update tasks (developer, manager, or admin role)
+      flows:
+        authorizationCode:
+          authorizationUrl: http://localhost:8083/realms/taskflow/protocol/openid-connect/auth
+          tokenUrl: http://localhost:8083/realms/taskflow/protocol/openid-connect/token
+          scopes:
+            tasks: create and update tasks
     apiKeyAuth:
       type: apiKey
       in: header

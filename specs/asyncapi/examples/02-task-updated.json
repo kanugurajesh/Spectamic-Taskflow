@@ -11,7 +11,7 @@
         "method": "PUT",
         "headers": {
           "Content-Type": "application/json",
-          "Authorization": "Bearer tok_charlie_admin_8a4f"
+          "Authorization": "Bearer __DEV_TOKEN_PLACEHOLDER__"
         },
         "body": {
           "status": "in-progress",

@@ -1,0 +1,22 @@
+{
+  "http-request": {
+    "path": "/tasks/999",
+    "method": "PUT",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "status": "completed"
+    }
+  },
+  "http-response": {
+    "status": 404,
+    "body": {
+      "error": "Not Found",
+      "message": "Task with id 999 not found"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

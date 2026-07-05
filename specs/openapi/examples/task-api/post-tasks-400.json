@@ -1,0 +1,23 @@
+{
+  "http-request": {
+    "path": "/tasks",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "description": "Missing required title field",
+      "priority": "low"
+    }
+  },
+  "http-response": {
+    "status": 400,
+    "body": {
+      "error": "Validation failed",
+      "message": "title is required"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}
