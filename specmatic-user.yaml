@@ -22,6 +22,10 @@ systemUnderTest:
                 apiKeyAuth:
                   type: apiKey
                   token: ${USER_API_KEY:key_charlie_admin_7788}
+    data:
+      examples:
+        - directories:
+            - specs/openapi/examples/user-api
 
 specmatic:
   settings:
@@ -33,11 +37,12 @@ specmatic:
         - html
       outputDirectory: build/reports/specmatic
     successCriteria:
-      # 401/403 are declared on every secured operation for documentation purposes, but a
-      # contract-test run only ever exercises one configured (working) credential per scheme, so
-      # those codes can never be triggered and always show up as "not tested" in the coverage
-      # report. Measured coverage with all 401/403 declared and all 49 tests passing: 56%.
-      minCoveragePercentage: 56
+      # 401/403 are declared on every secured operation and actually exercised: dedicated external
+      # examples in specs/openapi/examples/user-api/ carry their own hardcoded (invalid or
+      # wrong-role) credentials per scenario, independent of the working credential configured
+      # below for the positive-path examples. That's what makes them "tested" instead of
+      # permanently "not tested" in the coverage report. Measured: 53 tests passing, 100%.
+      minCoveragePercentage: 100
       maxMissedOperationsInSpec: 0
       enforce: true
   license:

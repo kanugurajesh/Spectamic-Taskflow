@@ -1,0 +1,21 @@
+{
+  "http-request": {
+    "path": "/tasks",
+    "method": "GET",
+    "headers": {
+      "Authorization": "Basic bm91c2VyOndyb25ncGFzcw=="
+    },
+    "body": ""
+  },
+  "http-response": {
+    "status": 401,
+    "body": {
+      "error": "Unauthorized",
+      "message": "Invalid username or password"
+    },
+    "status-text": "Unauthorized",
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

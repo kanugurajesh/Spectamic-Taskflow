@@ -1,0 +1,25 @@
+{
+  "http-request": {
+    "path": "/tasks",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer invalid_garbage_token"
+    },
+    "body": {
+      "title": "Attempted create with bad token",
+      "priority": "low"
+    }
+  },
+  "http-response": {
+    "status": 401,
+    "body": {
+      "error": "Unauthorized",
+      "message": "Invalid bearer token"
+    },
+    "status-text": "Unauthorized",
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

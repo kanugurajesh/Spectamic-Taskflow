@@ -1,0 +1,21 @@
+{
+  "http-request": {
+    "path": "/tasks/3",
+    "method": "DELETE",
+    "headers": {
+      "X-API-Key": "key_alice_dev_1122"
+    },
+    "body": ""
+  },
+  "http-response": {
+    "status": 403,
+    "body": {
+      "error": "Forbidden",
+      "message": "role 'developer' is not permitted to perform this action"
+    },
+    "status-text": "Forbidden",
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

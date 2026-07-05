@@ -1,0 +1,25 @@
+{
+  "http-request": {
+    "path": "/tasks",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer tok_bob_qa_2e7a"
+    },
+    "body": {
+      "title": "Attempted create by qa role",
+      "priority": "low"
+    }
+  },
+  "http-response": {
+    "status": 403,
+    "body": {
+      "error": "Forbidden",
+      "message": "role 'qa' is not permitted to perform this action"
+    },
+    "status-text": "Forbidden",
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

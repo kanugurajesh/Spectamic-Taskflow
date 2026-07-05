@@ -1,0 +1,27 @@
+{
+  "http-request": {
+    "path": "/users",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-API-Key": "invalid_garbage_key"
+    },
+    "body": {
+      "id": "eve",
+      "name": "Eve Adams",
+      "email": "eve@example.com",
+      "role": "developer"
+    }
+  },
+  "http-response": {
+    "status": 401,
+    "body": {
+      "error": "Unauthorized",
+      "message": "Valid X-API-Key header required"
+    },
+    "status-text": "Unauthorized",
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

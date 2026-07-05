@@ -1,0 +1,21 @@
+{
+  "http-request": {
+    "path": "/users/alice",
+    "method": "GET",
+    "headers": {
+      "X-API-Key": "invalid_garbage_key"
+    },
+    "body": ""
+  },
+  "http-response": {
+    "status": 401,
+    "body": {
+      "error": "Unauthorized",
+      "message": "Valid X-API-Key header required"
+    },
+    "status-text": "Unauthorized",
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

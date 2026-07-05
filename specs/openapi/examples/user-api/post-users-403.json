@@ -1,0 +1,27 @@
+{
+  "http-request": {
+    "path": "/users",
+    "method": "POST",
+    "headers": {
+      "Content-Type": "application/json",
+      "X-API-Key": "key_bob_qa_3344"
+    },
+    "body": {
+      "id": "eve",
+      "name": "Eve Adams",
+      "email": "eve@example.com",
+      "role": "developer"
+    }
+  },
+  "http-response": {
+    "status": 403,
+    "body": {
+      "error": "Forbidden",
+      "message": "role 'qa' is not permitted to perform this action"
+    },
+    "status-text": "Forbidden",
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}
