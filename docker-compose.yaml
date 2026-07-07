@@ -155,13 +155,31 @@ services:
     command:
       - -ec
       - |
+        set -o pipefail
         cp -r /usr/src/app/. /tmp/app/
         cd /tmp/app
 
-        DEV_TOKEN=$$(curl -sf -X POST "$$KEYCLOAK_BASE_URL/realms/taskflow/protocol/openid-connect/token" \
-          -d "grant_type=password&client_id=task-api&username=$$KEYCLOAK_DEV_USERNAME&password=$$KEYCLOAK_DEV_PASSWORD" | jq -r .access_token)
-        QA_TOKEN=$$(curl -sf -X POST "$$KEYCLOAK_BASE_URL/realms/taskflow/protocol/openid-connect/token" \
-          -d "grant_type=password&client_id=task-api&username=$$KEYCLOAK_QA_USERNAME&password=$$KEYCLOAK_QA_PASSWORD" | jq -r .access_token)
+        # `keycloak`'s healthcheck only proves /health/ready is UP - it does not guarantee
+        # --import-realm has finished registering the task-api client/users yet, so the very
+        # first password-grant request here can still lose that race and get an error response.
+        # Retry until a real JWT comes back instead of silently substituting an empty/invalid token.
+        fetch_token() {
+          local username="$$1" password="$$2" attempt token
+          for attempt in $$(seq 1 15); do
+            token=$$(curl -sf -X POST "$$KEYCLOAK_BASE_URL/realms/taskflow/protocol/openid-connect/token" \
+              -d "grant_type=password&client_id=task-api&username=$$username&password=$$password" | jq -r '.access_token // empty')
+            if [ -n "$$token" ]; then
+              echo "$$token"
+              return 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: failed to fetch Keycloak token for $$username after 15 attempts" >&2
+          return 1
+        }
+
+        DEV_TOKEN=$$(fetch_token "$$KEYCLOAK_DEV_USERNAME" "$$KEYCLOAK_DEV_PASSWORD")
+        QA_TOKEN=$$(fetch_token "$$KEYCLOAK_QA_USERNAME" "$$KEYCLOAK_QA_PASSWORD")
 
         sed -i "s/__QA_TOKEN_PLACEHOLDER__/$$QA_TOKEN/g" \
           specs/openapi/examples/task-api/post-tasks-403.json \
