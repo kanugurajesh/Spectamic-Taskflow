@@ -62,8 +62,8 @@ specmatic-taskflow/
 │   ├── task-service/              # Flask + Kafka publisher
 │   └── user-service/              # Flask user registry
 ├── frontend/                      # Vanilla JS Kanban board
-├── specmatic.yaml                 # REST test configuration
-├── specmatic-async.yaml           # Async test configuration
+├── specmatic.yaml                 # Task API REST + async Kafka test configuration
+├── specmatic-user.yaml            # User API REST test configuration
 └── docker-compose.yaml            # Full orchestration
 ```
 
@@ -576,6 +576,8 @@ systemUnderTest:
 
 > **Gotcha I hit (the one that mattered most):** Once the wiring was right, the test still failed — every message timed out. The task service's `_publish()` wraps the Kafka call in a `try/except` (so the service can start before Kafka is ready), and that swallowed an exception every single time: `kafka-python==2.0.2` doesn't work on Python 3.12 (`No module named 'kafka.vendor.six.moves'`). The Kafka publish had never actually succeeded — it just looked fine because nothing was asserting on it until the async contract test existed. Switching to `kafka-python-ng` (a maintained drop-in fork, same `import kafka`) fixed it. This is exactly the failure mode contract testing is supposed to catch: a swallowed exception that made the service *look* healthy while silently dropping every event.
 
+> **Update — the standalone config didn't survive:** everything above was true when it was written, but `specmatic-async.yaml` and the separate `test-async` container are gone now. Task API (OpenAPI) and task-events (AsyncAPI) both test the same `task-service`, so there was no real reason to keep them on two separate `systemUnderTest.service` definitions bind-mounted into two separate containers. I merged the AsyncAPI `definition`/`runOptions.asyncapi` block straight into `specmatic.yaml` alongside the existing OpenAPI one, deleted `specmatic-async.yaml`, and collapsed `test-async` into `test-task-api` — one `specmatic test` run now reports REST and Kafka results together (135/135 REST + 2/2 async, 100% coverage), and the `--profile async` flag doesn't exist anymore. Everything else in this section — the `kafka:9092` host fix, the external example files with `before` hooks, the `kafka-python-ng` swap — is still exactly how it works today; only the file/container boundary changed.
+
 ---
 
 ## Step 6: Mock Server for Parallel Development
@@ -729,9 +731,48 @@ Testing 401/403 "for real" worked cleanly for the static schemes, but `bearerAut
 
 **The actual fix lives in the test container's entrypoint, not in the example files.** `test-task-api` in `docker-compose.yaml` now copies the (read-only-mounted) repo into a scratch directory, fetches real tokens for alice (developer) and bob (qa) straight from Keycloak, and `sed`-substitutes them into the two examples and two async hooks that need a *specific* role. Everything else that just needs *some* valid allowed-role credential has no explicit `Authorization` header at all and picks up the freshly-fetched developer token from the global config automatically — same mechanism as `basicAuth`/`apiKeyAuth`. One last `cp` gotcha: Docker auto-creates `working_dir` as an empty directory before the entrypoint runs, so `cp -r /src /tmp/app` copies `/src` as a *subdirectory* of the already-existing `/tmp/app` rather than populating it — `cp -r /src/. /tmp/app/` was the fix.
 
+### Gotcha 4: the token fetch itself was racing Keycloak's realm import
+
+Even after Gotcha 3 was fixed, the suite was still sporadically flaky — not every run, just occasionally a `401` on an async before-fixture or on the `403` QA example, with no code change in between runs to explain it.
+
+The cause was a race, not an auth bug: `test-task-api` depends on Keycloak via `service_healthy`, but that healthcheck only proves `/health/ready` is up — it says nothing about whether `--import-realm` has actually finished registering the `task-api` client and its users yet. The very first password-grant request could land in that gap and get an error response back, and because the entrypoint script didn't have `set -o pipefail`, a failed `curl` piped into `jq` doesn't fail the pipeline — it just produces an empty string, which then got `sed`-substituted into the example files as if it were a real token:
+
+```bash
+# Before — one-shot, no protection against losing the realm-import race
+DEV_TOKEN=$(curl -sf -X POST "$KEYCLOAK_BASE_URL/realms/taskflow/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=task-api&username=$KEYCLOAK_DEV_USERNAME&password=$KEYCLOAK_DEV_PASSWORD" | jq -r .access_token)
+QA_TOKEN=$(curl -sf -X POST "$KEYCLOAK_BASE_URL/realms/taskflow/protocol/openid-connect/token" \
+  -d "grant_type=password&client_id=task-api&username=$KEYCLOAK_QA_USERNAME&password=$KEYCLOAK_QA_PASSWORD" | jq -r .access_token)
+```
+
+```bash
+# After — pipefail on, retry until a real JWT comes back or fail loudly
+set -o pipefail
+
+fetch_token() {
+  local username="$1" password="$2" attempt token
+  for attempt in $(seq 1 15); do
+    token=$(curl -sf -X POST "$KEYCLOAK_BASE_URL/realms/taskflow/protocol/openid-connect/token" \
+      -d "grant_type=password&client_id=task-api&username=$username&password=$password" | jq -r '.access_token // empty')
+    if [ -n "$token" ]; then
+      echo "$token"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ERROR: failed to fetch Keycloak token for $username after 15 attempts" >&2
+  return 1
+}
+
+DEV_TOKEN=$(fetch_token "$KEYCLOAK_DEV_USERNAME" "$KEYCLOAK_DEV_PASSWORD")
+QA_TOKEN=$(fetch_token "$KEYCLOAK_QA_USERNAME" "$KEYCLOAK_QA_PASSWORD")
+```
+
+`jq -r '.access_token // empty'` turns a missing field into an explicit empty string rather than the literal text `null`, so the `-n "$token"` check works correctly. The retry loop gives realm import up to 30 seconds to finish before giving up, and `pipefail` means any other kind of curl failure surfaces as a real script error instead of quietly propagating an empty token downstream. Same class of bug as the swallowed Kafka exception back in Step 5 — a failure that looked like test flakiness but was actually a docker-compose dependency graph that didn't model the thing it needed to wait for.
+
 ### What Specmatic tests here — authentication and authorization, both for real
 
-Running the suite with the securitySchemes correctly wired re-validates every existing example and schema-resiliency scenario against an authenticated backend — `basicAuth`/`apiKeyAuth` via a static admin (`charlie`) credential, `oAuth2AuthCode` via a real token fetched from Keycloak for alice (developer) at the start of every run — verified live: `test-task-api` 143/143 at 100% coverage, `test-user-api` 53/53 at 100%, `test-async` 2/2. Break the credential (wrong Keycloak password, or a valid-but-wrong-role account) and every scenario relying on that global credential fails — the same signal the reference lab demonstrates.
+Running the suite with the securitySchemes correctly wired re-validates every existing example and schema-resiliency scenario against an authenticated backend — `basicAuth`/`apiKeyAuth` via a static admin (`charlie`) credential, `oAuth2AuthCode` via a real token fetched from Keycloak for alice (developer) at the start of every run — verified live: `test-task-api` 143/143 REST scenarios plus 2/2 async Kafka scenarios in the same run, both at 100% coverage; `test-user-api` 53/53 at 100%. Break the credential (wrong Keycloak password, or a valid-but-wrong-role account) and every scenario relying on that global credential fails — the same signal the reference lab demonstrates.
 
 Authorization is tested the same way, not just declared: the dedicated external examples assert `bob` (qa) gets `403` on `POST /tasks` while the positive-path examples assert `alice` (developer) gets `201` — in the *same* single contract-test run, because each example brings its own credential rather than relying on the one global value. OpenAPI's `security` keyword only models *authentication* (who you are) on its own; the per-role authorization rule ("qa can authenticate but can't create tasks") is real, enforced application logic in the Flask services, and I verified it twice — once as a counted Specmatic scenario, and once live via curl:
 
@@ -754,7 +795,7 @@ curl -X POST http://localhost:8080/tasks \
 I verified the full matrix (401/403/200/201/204 across every operation and every role) by running both Flask services directly and driving them with `curl`.
 
 Two smaller downstream fixes came out of turning this on:
-- The async `before`-hooks (`specs/asyncapi/examples/*.json`) call `POST /tasks` and `PUT /tasks/2` directly — they now carry a placeholder `Authorization` header that the test entrypoint substitutes with a real fetched token, or `test-async` would start failing its setup calls with `401`.
+- The async `before`-hooks (`specs/asyncapi/examples/*.json`) call `POST /tasks` and `PUT /tasks/2` directly — they now carry a placeholder `Authorization` header that the test entrypoint substitutes with a real fetched token, or `test-task-api` (which runs the async contract test alongside REST, see the update in Step 5) would start failing its setup calls with `401`.
 - The frontend's "Real Service" target hits `task-service:8080` directly from the browser, so it now fetches its own token from Keycloak on first use (password grant, cached) — clearly commented as a lab/demo shortcut, not a real login flow.
 
 ---
@@ -801,11 +842,11 @@ This is what "AI-native infrastructure" actually means: not using AI to write co
 │  │    :9092     │                                       │
 │  └──────────────┘                                       │
 │                                                          │
-│  ┌───────────────────┐   ┌──────────────────────────┐   │
-│  │  test-task-api    │   │  test-async              │   │
-│  │  Specmatic REST   │   │  Specmatic AsyncAPI      │   │
-│  │  (OpenAPI 3.0.1)  │   │  (Kafka topic tests)     │   │
-│  └───────────────────┘   └──────────────────────────┘   │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │  test-task-api                                      │ │
+│  │  Specmatic REST + AsyncAPI                          │ │
+│  │  (OpenAPI 3.0.1 + Kafka topic tests, one run)        │ │
+│  └────────────────────────────────────────────────────┘ │
 │                                                          │
 │  ┌──────────────┐   ┌─────────────────────────────────┐ │
 │  │  frontend    │   │  mock-task-api                  │ │
@@ -1034,11 +1075,8 @@ cd Spectamic-Taskflow
 # Full stack + REST contract tests (use --build on first run)
 docker compose up --build
 
-# Run only the contract tests
+# Run only the contract tests (REST + async Kafka events, one run)
 docker compose up test-task-api test-user-api --build --abort-on-container-exit
-
-# With async event tests
-docker compose --profile async up test-async --abort-on-container-exit
 
 # Frontend against mock server (no backend needed)
 docker compose --profile mock up mock-task-api frontend
